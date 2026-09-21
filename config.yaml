@@ -1,0 +1,24 @@
+# ICT Institutional Crypto Signal Engine Configuration
+
+# Trading universe to scan
+symbols:
+  - "BTC/USDT"
+  - "ETH/USDT"
+  - "SOL/USDT"
+
+# SMT Benchmark pair (correlated asset)
+smt_benchmark: "ETH/USDT"
+
+# Timeframes
+ltf_timeframe: "5m"      # Lower timeframe for liquidity sweeps, MSS, and FVG entry
+htf_timeframe: "4h"      # Higher timeframe for dealing range equilibrium & macro DOL
+
+# Execution filters
+min_risk_reward: 2.5     # Minimum acceptable R:R ratio
+fixed_risk_percent: 1.0  # Risk per trade (% of account)
+scan_interval_seconds: 60
+
+# Alerts / Webhooks (Leave blank to use console only or configure via .env)
+telegram_bot_token: ""
+telegram_chat_id: ""
+discord_webhook_url: ""

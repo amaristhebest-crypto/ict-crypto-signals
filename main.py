@@ -153,7 +153,7 @@ def main():
         return
 
     config = AppConfig.load(args.config)
-    fetcher = CryptoDataFetcher(exchange_id="binance")
+    fetcher = CryptoDataFetcher(exchange_id="okx")
     detector = ICTSignalDetector(min_risk_reward=config.min_risk_reward)
 
     if args.mode == "once":

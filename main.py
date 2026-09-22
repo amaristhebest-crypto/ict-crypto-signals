@@ -100,43 +100,32 @@ class CloudHealthServer(BaseHTTPRequestHandler):
             ]
         )
 
-        # Signals Card HTML
+        # Signals Card HTML (Simple 3-Point Bracket Order)
         signals_html = ""
         if LATEST_STATE["recent_signals"]:
             for sig in LATEST_STATE["recent_signals"]:
                 is_bull = sig["direction"] == "BULLISH"
                 bg_card = "#0f231c" if is_bull else "#2a1215"
                 border_card = "#10b981" if is_bull else "#ef4444"
-                text_dir = "#34d399" if is_bull else "#f87171"
                 action_word = "BUY / LONG" if is_bull else "SELL / SHORT"
                 order_name = "LIMIT BUY" if is_bull else "LIMIT SELL"
-                risk_u = sig["risk_per_unit"]
 
                 signals_html += f"""
                 <div style="background:{bg_card};border:1px solid {border_card};border-radius:8px;padding:16px;margin-bottom:16px;">
                   <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="font-size:16px;font-weight:bold;color:#f8fafc;">⚡ {sig['symbol']} ({sig['timeframe']})</span>
+                    <span style="font-size:16px;font-weight:bold;color:#f8fafc;">⚡ {sig['symbol']}</span>
                     <span style="background:{border_card};color:#000;font-weight:bold;padding:3px 8px;border-radius:4px;font-size:11px;">{action_word}</span>
                   </div>
                   <div style="font-size:12px;color:#94a3b8;margin:6px 0;">{sig['ist_time']} • {sig['session_name']}</div>
                   
-                  <div style="background:#0b0e14;border-radius:6px;padding:12px;margin:10px 0;font-size:13px;line-height:1.7;">
-                    <div style="color:#f8fafc;font-weight:bold;margin-bottom:4px;border-bottom:1px solid #1e293b;padding-bottom:4px;">
-                      📋 Step-by-Step Execution Plan (No Manual Math):
+                  <div style="background:#0b0e14;border-radius:6px;padding:14px;margin:10px 0;font-size:14px;line-height:2.0;">
+                    <div style="color:#f8fafc;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #1e293b;padding-bottom:4px;">
+                      🎯 Simple 3-Number Bracket Order (Copy & Paste):
                     </div>
-                    <div>👉 <b>1. ENTRY:</b> <span style="color:#38bdf8;font-weight:bold;">{order_name} @ ${sig['entry_price']:,.2f}</span> (50% FVG CE)</div>
-                    <div>👉 <b>2. STOP LOSS:</b> <span style="color:#f87171;font-weight:bold;">${sig['stop_loss']:,.2f}</span> (Risk: ${risk_u:,.2f})</div>
-                    <div>👉 <b>3. TP 1:</b> <span style="color:#fbbf24;font-weight:bold;">${sig['target_1']:,.2f}</span> ➔ <b>Close 50% & Move SL to Breakeven (${sig['entry_price']:,.2f})</b></div>
-                    <div>👉 <b>4. TP 2:</b> <span style="color:#34d399;font-weight:bold;">${sig['target_2']:,.2f}</span> ➔ Close 25% (OTE -0.27)</div>
-                    <div>👉 <b>5. TP 3:</b> <span style="color:#a78bfa;font-weight:bold;">${sig['target_3']:,.2f}</span> ➔ Close final 25% runner (Macro DOL)</div>
-                    <div style="margin-top:6px;color:#cbd5e1;">⚖️ <b>Risk / Reward:</b> <span style="color:#34d399;font-weight:bold;">1 : {sig['risk_reward_ratio']:.2f} R</span></div>
-                  </div>
-
-                  <div style="background:#131822;border-radius:6px;padding:8px 12px;font-size:11px;color:#94a3b8;margin-bottom:10px;">
-                    <b>💡 Recommended Sizing (1% Risk):</b><br>
-                    • $1,000 Acc: <b>{(10/risk_u):.4f}</b> units &nbsp;|&nbsp; 
-                    • $5,000 Acc: <b>{(50/risk_u):.4f}</b> units &nbsp;|&nbsp; 
-                    • $10,000 Acc: <b>{(100/risk_u):.4f}</b> units
+                    <div>1️⃣ <b>ENTRY:</b> <span style="color:#38bdf8;font-weight:bold;font-family:monospace;font-size:15px;">${sig['entry_price']:,.2f}</span> ({order_name})</div>
+                    <div>2️⃣ <b>STOP LOSS:</b> <span style="color:#f87171;font-weight:bold;font-family:monospace;font-size:15px;">${sig['stop_loss']:,.2f}</span></div>
+                    <div>3️⃣ <b>TAKE PROFIT:</b> <span style="color:#34d399;font-weight:bold;font-family:monospace;font-size:15px;">${sig['target_2']:,.2f}</span> (1 : {sig['risk_reward_ratio']:.1f} R:R)</div>
+                    <div style="font-size:12px;color:#94a3b8;margin-top:6px;">💡 <i>Optional Breakeven: Once price reaches ${sig['target_1']:,.2f}, move SL to ${sig['entry_price']:,.2f}</i></div>
                   </div>
 
                   <a href="{sig['tv_link']}" target="_blank" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:bold;">

@@ -1,5 +1,5 @@
 """
-Telegram Alert Notifier for ICT Signals with Complete Trade Management Automation.
+Telegram Alert Notifier for ICT Signals with Ultra-Simple 3-Point Bracket Order.
 """
 import requests
 import logging
@@ -32,60 +32,29 @@ class TelegramNotifier:
 
     def send_signal(self, signal: ICTSignal) -> bool:
         if not self.bot_token or not self.chat_id or "YOUR_" in self.bot_token:
-            logger.info("Telegram credentials not configured. Skipping Telegram dispatch.")
             return False
 
         icon = "🟢" if signal.direction == Direction.BULLISH else "🔴"
-        direction_str = "LONG / BUY" if signal.direction == Direction.BULLISH else "SHORT / SELL"
+        action = "BUY / LONG" if signal.direction == Direction.BULLISH else "SELL / SHORT"
         order_type = "LIMIT BUY" if signal.direction == Direction.BULLISH else "LIMIT SELL"
 
-        confluence_list = "\n".join([f"  • {c}" for c in signal.confluence_factors])
         ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
-        ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
         tv_link = get_tv_link(signal.symbol)
-        risk_per_unit = abs(signal.entry_price - signal.stop_loss)
-
-        # Sizing table for 1% risk
-        size_txt = ""
-        if risk_per_unit > 0:
-            size_txt = (
-                f"\n💰 *RECOMMENDED SIZING (1% Risk):*\n"
-                f"  • $1,000 Acc ($10 risk): `{(10/risk_per_unit):.4f}` units\n"
-                f"  • $5,000 Acc ($50 risk): `{(50/risk_per_unit):.4f}` units\n"
-                f"  • $10,000 Acc ($100 risk): `{(100/risk_per_unit):.4f}` units\n"
-            )
 
         message = (
-            f"⚡ *ICT INSTITUTIONAL SIGNAL* ⚡\n\n"
-            f"{icon} *Asset:* `{signal.symbol}` ({signal.timeframe})\n"
-            f"🎯 *Direction:* *{direction_str}*\n"
-            f"🏛 *Setup:* `{signal.setup_name}`\n"
-            f"🕒 *Session:* `{signal.session_name}`\n"
-            f"🇮🇳 *Time (India):* `{ist_time}` ({ny_time} NY)\n"
-            f"⚖️ *Risk/Reward:* `1 : {signal.risk_reward_ratio:.2f} R`\n\n"
-            f"📋 *EXACT STEP-BY-STEP TRADE EXECUTION:*\n"
-            f"  1️⃣ *ENTRY:* Set `{order_type}` at `${signal.entry_price:,.2f}` (FVG 50% CE)\n"
-            f"  2️⃣ *STOP LOSS:* Hard Stop at `${signal.stop_loss:,.2f}` (Risk: ${risk_per_unit:,.2f})\n"
-            f"  3️⃣ *TP 1:* `${signal.target_1:,.2f}`\n"
-            f"     ↳ *Rule:* Close *50% position* & move Stop Loss to *Breakeven* (`${signal.entry_price:,.2f}`).\n"
-            f"     ↳ *Result:* Guaranteed profit locked; trade is 100% risk-free!\n"
-            f"  4️⃣ *TP 2:* `${signal.target_2:,.2f}`\n"
-            f"     ↳ *Rule:* Close *25% position* (75% total secured). OTE -0.27.\n"
-            f"  5️⃣ *TP 3:* `${signal.target_3:,.2f}`\n"
-            f"     ↳ *Rule:* Close final *25% runner* at Macro HTF DOL.\n"
-            f"{size_txt}\n"
-            f"📈 [Open TradingView Chart]({tv_link})\n\n"
-            f"🧠 *CONFLUENCES:*\n"
-            f"{confluence_list}\n\n"
-            f"⚠️ *INVALIDATION:* {signal.invalidation_notes}\n"
+            f"⚡ *ICT SIGNAL: {signal.symbol}* ⚡\n\n"
+            f"{icon} *Action:* *{action}*\n"
+            f"🕒 *Time:* `{ist_time}`\n"
+            f"📈 [Open Chart]({tv_link})\n\n"
+            f"🎯 *SIMPLE 3-STEP BRACKET ORDER:*\n"
+            f"1️⃣ *ENTRY:* `${signal.entry_price:,.2f}` ({order_type})\n"
+            f"2️⃣ *STOP LOSS:* `${signal.stop_loss:,.2f}`\n"
+            f"3️⃣ *TAKE PROFIT:* `${signal.target_2:,.2f}` (1:{signal.risk_reward_ratio:.1f} R:R)\n\n"
+            f"💡 *Tip:* Move Stop Loss to Breakeven (${signal.entry_price:,.2f}) after first push (${signal.target_1:,.2f})."
         )
 
         try:
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-            }
+            payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}
             resp = requests.post(self.api_url, json=payload, timeout=10)
             return resp.status_code == 200
         except Exception as e:

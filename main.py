@@ -17,9 +17,10 @@ from src.engine.fetcher import CryptoDataFetcher, MarketDataFetcher
 from src.engine.detector import ICTSignalDetector
 from src.alerts.telegram import TelegramNotifier
 from src.alerts.discord import DiscordNotifier
-from src.alerts.console import ConsoleNotifier, get_tv_link
+from src.alerts.console import ConsoleNotifier
 from src.core.models import Candle, ICTSignal, Direction
 from src.core.sessions import SessionDetector
+from src.core.mffu import MFFUHelper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,14 +43,22 @@ LATEST_STATE = {
 
 def register_signal_state(signal: ICTSignal):
     """
-    Saves detected signal into global state for web dashboard display.
+    Saves detected signal with MFFU 50K contract metrics for web dashboard display.
     """
     ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
     ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
-    risk_per_unit = abs(signal.entry_price - signal.stop_loss)
+    m = MFFUHelper.calculate_trade_metrics(
+        signal.symbol,
+        signal.entry_price,
+        signal.stop_loss,
+        signal.target_2,
+        quantity=2,
+    )
 
     sig_data = {
         "symbol": signal.symbol,
+        "mffu_ticker": m["mffu_ticker"],
+        "contract_name": m["contract_name"],
         "timeframe": signal.timeframe,
         "direction": signal.direction.value,
         "setup_name": signal.setup_name,
@@ -62,8 +71,11 @@ def register_signal_state(signal: ICTSignal):
         "target_2": signal.target_2,
         "target_3": signal.target_3,
         "risk_reward_ratio": signal.risk_reward_ratio,
-        "risk_per_unit": risk_per_unit,
-        "tv_link": get_tv_link(signal.symbol),
+        "risk_points": m["risk_points"],
+        "dollar_risk": m["dollar_risk"],
+        "dollar_profit": m["dollar_profit"],
+        "cushion_pct": m["cushion_pct"],
+        "tv_link": m["tv_url"],
         "confluences": signal.confluence_factors,
         "invalidation": signal.invalidation_notes,
     }
@@ -100,7 +112,7 @@ class CloudHealthServer(BaseHTTPRequestHandler):
             ]
         )
 
-        # Signals Card HTML (Simple 3-Point Bracket Order)
+        # Signals Card HTML (MFFU 50K Specific Execution)
         signals_html = ""
         if LATEST_STATE["recent_signals"]:
             for sig in LATEST_STATE["recent_signals"]:
@@ -113,23 +125,35 @@ class CloudHealthServer(BaseHTTPRequestHandler):
                 signals_html += f"""
                 <div style="background:{bg_card};border:1px solid {border_card};border-radius:8px;padding:16px;margin-bottom:16px;">
                   <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="font-size:16px;font-weight:bold;color:#f8fafc;">⚡ {sig['symbol']}</span>
+                    <span style="font-size:16px;font-weight:bold;color:#f8fafc;">⚡ MFFU: {sig['mffu_ticker']} ({sig['contract_name']})</span>
                     <span style="background:{border_card};color:#000;font-weight:bold;padding:3px 8px;border-radius:4px;font-size:11px;">{action_word}</span>
                   </div>
                   <div style="font-size:12px;color:#94a3b8;margin:6px 0;">{sig['ist_time']} • {sig['session_name']}</div>
+
+                  <div style="background:#131b28;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;">
+                    <div>👉 <b>Tradovate Ticker:</b> <span style="color:#fbbf24;font-weight:bold;">{sig['mffu_ticker']}</span> (Micro contract)</div>
+                    <div>👉 <b>Recommended Qty:</b> <span style="color:#f8fafc;font-weight:bold;">2 Micro Contracts</span></div>
+                  </div>
                   
                   <div style="background:#0b0e14;border-radius:6px;padding:14px;margin:10px 0;font-size:14px;line-height:2.0;">
                     <div style="color:#f8fafc;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #1e293b;padding-bottom:4px;">
-                      🎯 Simple 3-Number Bracket Order (Copy & Paste):
+                      🎯 3-Point Bracket Order (Copy & Paste):
                     </div>
-                    <div>1️⃣ <b>ENTRY:</b> <span style="color:#38bdf8;font-weight:bold;font-family:monospace;font-size:15px;">${sig['entry_price']:,.2f}</span> ({order_name})</div>
+                    <div>1️⃣ <b>ENTRY PRICE:</b> <span style="color:#38bdf8;font-weight:bold;font-family:monospace;font-size:15px;">${sig['entry_price']:,.2f}</span> ({order_name} at FVG CE)</div>
                     <div>2️⃣ <b>STOP LOSS:</b> <span style="color:#f87171;font-weight:bold;font-family:monospace;font-size:15px;">${sig['stop_loss']:,.2f}</span></div>
                     <div>3️⃣ <b>TAKE PROFIT:</b> <span style="color:#34d399;font-weight:bold;font-family:monospace;font-size:15px;">${sig['target_2']:,.2f}</span> (1 : {sig['risk_reward_ratio']:.1f} R:R)</div>
-                    <div style="font-size:12px;color:#94a3b8;margin-top:6px;">💡 <i>Optional Breakeven: Once price reaches ${sig['target_1']:,.2f}, move SL to ${sig['entry_price']:,.2f}</i></div>
+                    <div style="font-size:12px;color:#94a3b8;margin-top:6px;">💡 <i>Breakeven: Once price hits ${sig['target_1']:,.2f}, drag Stop Loss to ${sig['entry_price']:,.2f} (Risk-Free!)</i></div>
+                  </div>
+
+                  <div style="background:#131822;border-radius:6px;padding:10px 14px;font-size:12px;color:#cbd5e1;margin-bottom:10px;line-height:1.6;">
+                    <b>💰 MFFU 50K Risk Check:</b><br>
+                    • Dollar Risk on 2 Micros: <span style="color:#f87171;font-weight:bold;">${sig['dollar_risk']:,.2f}</span> (Only {sig['cushion_pct']:.1f}% of $2,000 drawdown floor)<br>
+                    • Potential Profit: <span style="color:#34d399;font-weight:bold;">+${sig['dollar_profit']:,.2f}</span><br>
+                    • Invalidation Floor: <b>$48,000.00</b> (EOD) &nbsp;|&nbsp; Daily Cap: <b>$1,500.00</b> (50% consistency)
                   </div>
 
                   <a href="{sig['tv_link']}" target="_blank" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:bold;">
-                    📈 Open TradingView Chart &rarr;
+                    📈 Open Chart on TradingView &rarr;
                   </a>
                 </div>
                 """

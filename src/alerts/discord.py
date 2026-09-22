@@ -1,27 +1,13 @@
 """
-Discord Webhook Notifier for ICT Signals with Ultra-Simple 3-Point Bracket Order.
+Discord Webhook Notifier Tailored Specifically for MFFU 50K Account Trading.
 """
 import requests
 import logging
 from src.core.models import ICTSignal, Direction
 from src.core.sessions import SessionDetector
+from src.core.mffu import MFFUHelper
 
 logger = logging.getLogger(__name__)
-
-
-def get_tv_link(symbol: str) -> str:
-    clean = symbol.upper().replace("/", "").replace(":USDT", "USDT")
-    if clean in ("GOLD", "GC=F", "XAUUSD"):
-        return "https://www.tradingview.com/chart/?symbol=TVC:GOLD"
-    if clean in ("SILVER", "SI=F", "XAGUSD"):
-        return "https://www.tradingview.com/chart/?symbol=TVC:SILVER"
-    if clean in ("CRUDE", "CL=F", "OIL", "WTI"):
-        return "https://www.tradingview.com/chart/?symbol=TVC:USOIL"
-    if clean in ("NQ", "NQZ2026", "NQZ26", "NQ1!", "NQ=F", "NASDAQ"):
-        return "https://www.tradingview.com/chart/?symbol=CME_MINI:NQ1!"
-    if clean in ("ES", "ESZ2026", "ESZ26", "ES1!", "ES=F", "SP500"):
-        return "https://www.tradingview.com/chart/?symbol=CME_MINI:ES1!"
-    return f"https://www.tradingview.com/chart/?symbol=OKX:{clean}"
 
 
 class DiscordNotifier:
@@ -37,28 +23,47 @@ class DiscordNotifier:
         order_type = "LIMIT BUY" if signal.direction == Direction.BULLISH else "LIMIT SELL"
 
         ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
-        tv_link = get_tv_link(signal.symbol)
+        m = MFFUHelper.calculate_trade_metrics(
+            signal.symbol,
+            signal.entry_price,
+            signal.stop_loss,
+            signal.target_2,
+            quantity=2,
+        )
 
-        trade_plan = (
+        order_box = (
+            f"**Search Ticker:** `{m['mffu_ticker']}` ({m['contract_name']})\n"
+            f"**Quantity:** `2 Micro Contracts`\n\n"
             f"**1️⃣ ENTRY:** `${signal.entry_price:,.2f}` ({order_type})\n"
-            f"**2️⃣ STOP LOSS:** `${signal.stop_loss:,.2f}`\n"
-            f"**3️⃣ TAKE PROFIT:** `${signal.target_2:,.2f}` (1 : {signal.risk_reward_ratio:.1f} R:R)\n\n"
-            f"💡 *Optional Breakeven:* Move SL to `${signal.entry_price:,.2f}` once price hits `${signal.target_1:,.2f}`."
+            f"**2️⃣ STOP LOSS:** `${signal.stop_loss:,.2f}` (Risk: ${m['dollar_risk']:,.2f})\n"
+            f"**3️⃣ TAKE PROFIT:** `${signal.target_2:,.2f}` (Reward: +${m['dollar_profit']:,.2f} | 1:{signal.risk_reward_ratio:.1f} R:R)\n\n"
+            f"💡 *Move SL to Breakeven (${signal.entry_price:,.2f}) after first push (${signal.target_1:,.2f})*"
+        )
+
+        risk_box = (
+            f"• **Risk on 2 Micros:** `${m['dollar_risk']:,.2f}` ({m['cushion_pct']:.1f}% of $2,000 drawdown)\n"
+            f"• **EOD Invalidation Floor:** `$48,000.00`\n"
+            f"• **50% Daily Profit Cap:** `$1,500.00`"
         )
 
         embed = {
-            "title": f"⚡ ICT Signal: {signal.symbol} — {direction_str}",
-            "description": f"**Time (India):** {ist_time}\n**Session:** {signal.session_name}\n[📈 Open TradingView Chart]({tv_link})",
+            "title": f"⚡ MFFU 50K Signal: {m['mffu_ticker']} — {direction_str}",
+            "description": f"**Time (India):** {ist_time}\n**Session:** {signal.session_name}\n[📈 Open Chart on TradingView]({m['tv_url']})",
             "color": color,
             "fields": [
                 {
-                    "name": "🎯 Simple 3-Step Bracket Order",
-                    "value": trade_plan,
+                    "name": "📋 Tradovate / TradingView Order (Copy & Paste)",
+                    "value": order_box,
                     "inline": False,
-                }
+                },
+                {
+                    "name": "💰 50K Account Risk Parameters",
+                    "value": risk_box,
+                    "inline": False,
+                },
             ],
             "footer": {
-                "text": "ICT Automated Signal Engine",
+                "text": "My Funded Futures (MFFU) Execution Engine • 24/7 Cloud",
             },
         }
 

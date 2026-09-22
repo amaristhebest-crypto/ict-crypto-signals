@@ -1,6 +1,5 @@
 """
-Main runner for ICT Automated Multi-Asset Signal Engine.
-Supports continuous daemon monitoring, one-shot scan, deterministic simulation,
+Master execution runner for ICT multi-asset algorithmic scanning engine
 and lightweight 24/7 cloud health dashboard server (Render/Railway/Fly.io compatible).
 """
 import sys
@@ -18,8 +17,8 @@ from src.engine.fetcher import CryptoDataFetcher, MarketDataFetcher
 from src.engine.detector import ICTSignalDetector
 from src.alerts.telegram import TelegramNotifier
 from src.alerts.discord import DiscordNotifier
-from src.alerts.console import ConsoleNotifier
-from src.core.models import Candle
+from src.alerts.console import ConsoleNotifier, get_tv_link
+from src.core.models import Candle, ICTSignal, Direction
 from src.core.sessions import SessionDetector
 
 logging.basicConfig(
@@ -37,7 +36,42 @@ LATEST_STATE = {
     "active_session": "",
     "prices": {},
     "monitored_symbols": [],
+    "recent_signals": [],
 }
+
+
+def register_signal_state(signal: ICTSignal):
+    """
+    Saves detected signal into global state for web dashboard display.
+    """
+    ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
+    ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
+    risk_per_unit = abs(signal.entry_price - signal.stop_loss)
+
+    sig_data = {
+        "symbol": signal.symbol,
+        "timeframe": signal.timeframe,
+        "direction": signal.direction.value,
+        "setup_name": signal.setup_name,
+        "session_name": signal.session_name,
+        "ist_time": ist_time,
+        "ny_time": ny_time,
+        "entry_price": signal.entry_price,
+        "stop_loss": signal.stop_loss,
+        "target_1": signal.target_1,
+        "target_2": signal.target_2,
+        "target_3": signal.target_3,
+        "risk_reward_ratio": signal.risk_reward_ratio,
+        "risk_per_unit": risk_per_unit,
+        "tv_link": get_tv_link(signal.symbol),
+        "confluences": signal.confluence_factors,
+        "invalidation": signal.invalidation_notes,
+    }
+
+    # Keep latest 5 signals
+    LATEST_STATE["recent_signals"].insert(0, sig_data)
+    if len(LATEST_STATE["recent_signals"]) > 5:
+        LATEST_STATE["recent_signals"].pop()
 
 
 class CloudHealthServer(BaseHTTPRequestHandler):
@@ -58,13 +92,60 @@ class CloudHealthServer(BaseHTTPRequestHandler):
         # HTML Live Status Dashboard
         prices_html = "".join(
             [
-                f"<div style='background:#181f2e;padding:12px;border-radius:6px;margin-bottom:8px;display:flex;justify-content:space-between;'>"
-                f"<span style='font-weight:600;'>{sym}</span>"
-                f"<span style='color:#38bdf8;font-weight:bold;'>${price:,.2f}</span>"
+                f"<div style='background:#181f2e;padding:10px 14px;border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;'>"
+                f"<span style='font-weight:600;font-size:14px;color:#e2e8f0;'>{sym}</span>"
+                f"<span style='color:#38bdf8;font-weight:bold;font-family:monospace;font-size:14px;'>${price:,.2f}</span>"
                 f"</div>"
                 for sym, price in LATEST_STATE["prices"].items()
             ]
         )
+
+        # Signals Card HTML
+        signals_html = ""
+        if LATEST_STATE["recent_signals"]:
+            for sig in LATEST_STATE["recent_signals"]:
+                is_bull = sig["direction"] == "BULLISH"
+                bg_card = "#0f231c" if is_bull else "#2a1215"
+                border_card = "#10b981" if is_bull else "#ef4444"
+                text_dir = "#34d399" if is_bull else "#f87171"
+                action_word = "BUY / LONG" if is_bull else "SELL / SHORT"
+                order_name = "LIMIT BUY" if is_bull else "LIMIT SELL"
+                risk_u = sig["risk_per_unit"]
+
+                signals_html += f"""
+                <div style="background:{bg_card};border:1px solid {border_card};border-radius:8px;padding:16px;margin-bottom:16px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:16px;font-weight:bold;color:#f8fafc;">⚡ {sig['symbol']} ({sig['timeframe']})</span>
+                    <span style="background:{border_card};color:#000;font-weight:bold;padding:3px 8px;border-radius:4px;font-size:11px;">{action_word}</span>
+                  </div>
+                  <div style="font-size:12px;color:#94a3b8;margin:6px 0;">{sig['ist_time']} • {sig['session_name']}</div>
+                  
+                  <div style="background:#0b0e14;border-radius:6px;padding:12px;margin:10px 0;font-size:13px;line-height:1.7;">
+                    <div style="color:#f8fafc;font-weight:bold;margin-bottom:4px;border-bottom:1px solid #1e293b;padding-bottom:4px;">
+                      📋 Step-by-Step Execution Plan (No Manual Math):
+                    </div>
+                    <div>👉 <b>1. ENTRY:</b> <span style="color:#38bdf8;font-weight:bold;">{order_name} @ ${sig['entry_price']:,.2f}</span> (50% FVG CE)</div>
+                    <div>👉 <b>2. STOP LOSS:</b> <span style="color:#f87171;font-weight:bold;">${sig['stop_loss']:,.2f}</span> (Risk: ${risk_u:,.2f})</div>
+                    <div>👉 <b>3. TP 1:</b> <span style="color:#fbbf24;font-weight:bold;">${sig['target_1']:,.2f}</span> ➔ <b>Close 50% & Move SL to Breakeven (${sig['entry_price']:,.2f})</b></div>
+                    <div>👉 <b>4. TP 2:</b> <span style="color:#34d399;font-weight:bold;">${sig['target_2']:,.2f}</span> ➔ Close 25% (OTE -0.27)</div>
+                    <div>👉 <b>5. TP 3:</b> <span style="color:#a78bfa;font-weight:bold;">${sig['target_3']:,.2f}</span> ➔ Close final 25% runner (Macro DOL)</div>
+                    <div style="margin-top:6px;color:#cbd5e1;">⚖️ <b>Risk / Reward:</b> <span style="color:#34d399;font-weight:bold;">1 : {sig['risk_reward_ratio']:.2f} R</span></div>
+                  </div>
+
+                  <div style="background:#131822;border-radius:6px;padding:8px 12px;font-size:11px;color:#94a3b8;margin-bottom:10px;">
+                    <b>💡 Recommended Sizing (1% Risk):</b><br>
+                    • $1,000 Acc: <b>{(10/risk_u):.4f}</b> units &nbsp;|&nbsp; 
+                    • $5,000 Acc: <b>{(50/risk_u):.4f}</b> units &nbsp;|&nbsp; 
+                    • $10,000 Acc: <b>{(100/risk_u):.4f}</b> units
+                  </div>
+
+                  <a href="{sig['tv_link']}" target="_blank" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:bold;">
+                    📈 Open TradingView Chart &rarr;
+                  </a>
+                </div>
+                """
+        else:
+            signals_html = "<div style='color:#64748b;font-size:13px;padding:10px;background:#131822;border-radius:6px;text-align:center;'>Waiting for next high-probability displacement & FVG setup...</div>"
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -73,23 +154,30 @@ class CloudHealthServer(BaseHTTPRequestHandler):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ICT Automated Signal Engine — 24/7 Cloud</title>
 <style>
-  body {{ background: #0b0e14; color: #d1d4dc; font-family: -apple-system, sans-serif; padding: 24px; max-width: 600px; margin: 0 auto; }}
-  .card {{ background: #121722; border: 1px solid #1f2430; border-radius: 8px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
+  body {{ background: #0b0e14; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px; max-width: 650px; margin: 0 auto; }}
+  .card {{ background: #121722; border: 1px solid #1f2430; border-radius: 10px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
   .badge {{ background: #064e3b; color: #34d399; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }}
+  hr {{ border:0; border-top: 1px solid #1f2430; margin: 16px 0; }}
 </style>
 </head>
 <body>
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <h2 style="margin:0;font-size:18px;color:#f0f3f6;">⚡ ICT 24/7 Signal Engine</h2>
       <span class="badge">● ONLINE 24/7</span>
     </div>
     <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Active Session:</b> {LATEST_STATE["active_session"]}</p>
     <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Last Scan (India):</b> {LATEST_STATE["last_scan_ist"]}</p>
-    <hr style="border:0;border-top:1px solid #1f2430;margin:16px 0;">
-    <h3 style="font-size:14px;color:#f0f3f6;margin-bottom:12px;">Live Market Prices</h3>
+    
+    <hr>
+    <h3 style="font-size:14px;color:#f0f3f6;margin:0 0 10px 0;">⚡ Active Trade Execution Plans</h3>
+    {signals_html}
+
+    <hr>
+    <h3 style="font-size:14px;color:#f0f3f6;margin:0 0 10px 0;">Live Market Universe</h3>
     {prices_html or "<p style='color:#64748b;font-size:13px;'>Starting first scan...</p>"}
-    <div style="margin-top:20px;text-align:center;font-size:12px;color:#64748b;">
+
+    <div style="margin-top:20px;text-align:center;font-size:11px;color:#64748b;">
       Interbank Price Delivery Algorithm • ICT 2022 Mentorship Model
     </div>
   </div>
@@ -191,13 +279,14 @@ def run_demo():
     )
 
     if signal:
+        register_signal_state(signal)
         ConsoleNotifier.print_signal(signal)
     else:
         logger.warning("No setup met the strict institutional criteria.")
 
 
 def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignalDetector):
-    logger.info("Scanning asset universe (Crypto & Commodities) for live ICT setups...")
+    logger.info("Scanning asset universe (Crypto, Commodities & US Index Futures) for live ICT setups...")
     now_utc = datetime.now(timezone.utc)
     LATEST_STATE["status"] = "SCANNING"
     LATEST_STATE["last_scan_utc"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -207,7 +296,6 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
 
     for symbol in config.symbols:
         try:
-            # Determine appropriate SMT benchmark for the specific asset
             smt_benchmark = MarketDataFetcher.get_smt_benchmark_pair(symbol)
             smt_candles = None
             try:
@@ -234,6 +322,7 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
             )
 
             if signal:
+                register_signal_state(signal)
                 ConsoleNotifier.print_signal(signal)
                 if config.telegram_bot_token:
                     TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id).send_signal(signal)
@@ -272,7 +361,10 @@ def main():
 
     logger.info("Starting continuous ICT Market Scanner...")
     while True:
-        scan_live(config, fetcher, detector)
+        try:
+            scan_live(config, fetcher, detector)
+        except Exception as e:
+            logger.error(f"Unhandled error in scan cycle: {e}")
         time.sleep(config.scan_interval_seconds)
 
 

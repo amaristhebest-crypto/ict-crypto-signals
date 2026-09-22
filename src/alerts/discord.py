@@ -1,9 +1,10 @@
 """
-Discord Webhook Notifier for ICT Crypto Signals.
+Discord Webhook Notifier for ICT Signals with Complete Trade Management Automation.
 """
 import requests
 import logging
 from src.core.models import ICTSignal, Direction
+from src.core.sessions import SessionDetector
 
 logger = logging.getLogger(__name__)
 
@@ -32,37 +33,52 @@ class DiscordNotifier:
             return False
 
         color = 0x10B981 if signal.direction == Direction.BULLISH else 0xEF4444
-        direction_str = "🟢 LONG" if signal.direction == Direction.BULLISH else "🔴 SHORT"
+        direction_str = "🟢 LONG / BUY" if signal.direction == Direction.BULLISH else "🔴 SHORT / SELL"
+        order_type = "LIMIT BUY" if signal.direction == Direction.BULLISH else "LIMIT SELL"
 
         ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
         ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
         tv_link = get_tv_link(signal.symbol)
+        risk_per_unit = abs(signal.entry_price - signal.stop_loss)
+
+        trade_plan = (
+            f"**1️⃣ ENTRY:** `{order_type}` at `${signal.entry_price:,.2f}` (FVG 50% CE)\n"
+            f"**2️⃣ STOP LOSS:** `${signal.stop_loss:,.2f}` (Risk: ${risk_per_unit:,.2f})\n"
+            f"**3️⃣ TP 1:** `${signal.target_1:,.2f}` ➔ **Close 50% & Move SL to Breakeven (${signal.entry_price:,.2f})**\n"
+            f"**4️⃣ TP 2:** `${signal.target_2:,.2f}` ➔ Close 25% position (OTE -0.27)\n"
+            f"**5️⃣ TP 3:** `${signal.target_3:,.2f}` ➔ Close final 25% runner (Macro HTF DOL)\n"
+            f"**⚖️ Risk/Reward:** `1 : {signal.risk_reward_ratio:.2f} R`"
+        )
 
         embed = {
             "title": f"⚡ ICT Signal: {signal.symbol} — {direction_str}",
             "description": f"**Setup:** {signal.setup_name}\n**Session:** {signal.session_name}\n**Time (India):** {ist_time} ({ny_time} NY)\n[📈 Open TradingView Chart]({tv_link})",
             "color": color,
             "fields": [
-                {"name": "Limit Entry", "value": f"${signal.entry_price:,.2f}", "inline": True},
-                {"name": "Stop Loss", "value": f"${signal.stop_loss:,.2f}", "inline": True},
-                {"name": "R:R Ratio", "value": f"1:{signal.risk_reward_ratio:.2f}R", "inline": True},
-                {"name": "Target 1 (50% Off)", "value": f"${signal.target_1:,.2f}", "inline": True},
-                {"name": "Target 2 (Runner)", "value": f"${signal.target_2:,.2f}", "inline": True},
-                {"name": "Target 3 (Macro DOL)", "value": f"${signal.target_3:,.2f}", "inline": True},
                 {
-                    "name": "Confluences",
+                    "name": "📋 Exact Step-by-Step Trade Execution Plan",
+                    "value": trade_plan,
+                    "inline": False,
+                },
+                {
+                    "name": "🧠 Institutional Footprints & Confluences",
                     "value": "\n".join([f"• {c}" for c in signal.confluence_factors]),
                     "inline": False,
                 },
-                {"name": "Invalidation", "value": signal.invalidation_notes, "inline": False},
+                {
+                    "name": "⚠️ Invalidation Rule",
+                    "value": signal.invalidation_notes,
+                    "inline": False,
+                },
             ],
-            "footer": {"text": "ICT Institutional Price Delivery Algorithm Engine"},
-            "timestamp": signal.timestamp.isoformat(),
+            "footer": {
+                "text": "ICT 2022 Mentorship Automated Engine • 24/7 Cloud",
+            },
         }
 
         try:
             resp = requests.post(self.webhook_url, json={"embeds": [embed]}, timeout=10)
-            return resp.status_code in (200, 204)
+            return resp.status_code == 204
         except Exception as e:
-            logger.error(f"Failed to send Discord webhook: {e}")
+            logger.error(f"Failed to post Discord alert: {e}")
             return False

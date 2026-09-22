@@ -1,6 +1,7 @@
 """
-Universal market data fetcher supporting both Cryptocurrency (OKX/Binance)
-and Global Commodities (Gold, Silver, Crude Oil) without requiring private API keys.
+Universal market data fetcher supporting Cryptocurrency (OKX/Binance),
+Global Commodities (Gold, Silver, Crude Oil), and US Index Futures (Nasdaq NQ/NQZ2026, S&P 500 ES)
+without requiring private API keys.
 """
 from datetime import datetime, timezone
 from typing import List, Tuple
@@ -15,7 +16,8 @@ try:
 except ImportError:
     HAS_CCXT = False
 
-COMMODITY_MAP = {
+FUTURES_COMMODITY_MAP = {
+    # Metals
     "GOLD": "GC=F",
     "XAU/USD": "GC=F",
     "XAUUSD": "GC=F",
@@ -24,6 +26,7 @@ COMMODITY_MAP = {
     "XAG/USD": "SI=F",
     "XAGUSD": "SI=F",
     "SI=F": "SI=F",
+    # Energies
     "CRUDE": "CL=F",
     "CRUDE_OIL": "CL=F",
     "OIL": "CL=F",
@@ -31,6 +34,22 @@ COMMODITY_MAP = {
     "CL=F": "CL=F",
     "BRENT": "BZ=F",
     "BZ=F": "BZ=F",
+    # US Index Futures (Flagship ICT 2022 Mentorship Assets)
+    "NQ": "NQ=F",
+    "NQ1!": "NQ=F",
+    "NQ=F": "NQ=F",
+    "NQZ2026": "NQ=F",
+    "NQZ26": "NQ=F",
+    "NASDAQ": "NQ=F",
+    "ES": "ES=F",
+    "ES1!": "ES=F",
+    "ES=F": "ES=F",
+    "ESZ2026": "ES=F",
+    "ESZ26": "ES=F",
+    "SP500": "ES=F",
+    "YM": "YM=F",
+    "YM=F": "YM=F",
+    "DOW": "YM=F",
 }
 
 
@@ -49,31 +68,40 @@ class MarketDataFetcher:
     @staticmethod
     def is_commodity(symbol: str) -> bool:
         clean = symbol.upper().strip()
-        return clean in COMMODITY_MAP or clean.endswith("=F")
+        return clean in FUTURES_COMMODITY_MAP or clean.endswith("=F")
 
     @staticmethod
     def get_canonical_symbol(symbol: str) -> Tuple[str, bool]:
         clean = symbol.upper().strip()
-        if clean in COMMODITY_MAP:
-            return COMMODITY_MAP[clean], True
+        if clean in FUTURES_COMMODITY_MAP:
+            return FUTURES_COMMODITY_MAP[clean], True
         return symbol, False
 
     @staticmethod
     def get_smt_benchmark_pair(symbol: str) -> str:
         clean = symbol.upper().strip()
+        # Gold vs Silver (Month 11 Metals SMT)
         if clean in ("GOLD", "XAU/USD", "XAUUSD", "GC=F"):
-            return "SI=F"  # Gold benchmark is Silver
+            return "SI=F"
         if clean in ("SILVER", "XAG/USD", "XAGUSD", "SI=F"):
-            return "GC=F"  # Silver benchmark is Gold
+            return "GC=F"
+        # Nasdaq vs S&P 500 (Core ICT 2022 Mentorship Index SMT)
+        if clean in ("NQ", "NQZ2026", "NQZ26", "NQ1!", "NQ=F", "NASDAQ"):
+            return "ES=F"
+        if clean in ("ES", "ESZ2026", "ESZ26", "ES1!", "ES=F", "SP500"):
+            return "NQ=F"
+        # Crypto SMT (BTC vs ETH)
         if clean in ("BTC/USDT", "BTC"):
             return "ETH/USDT"
+        if clean in ("ETH/USDT", "ETH"):
+            return "BTC/USDT"
         return "BTC/USDT"
 
     def fetch_commodity_candles(
         self, ticker: str, timeframe: str = "5m", limit: int = 100
     ) -> List[Candle]:
         """
-        Fetches live commodity futures (Gold GC=F, Silver SI=F, Crude CL=F).
+        Fetches live continuous futures & commodity data (NQ=F, ES=F, GC=F, SI=F, CL=F).
         """
         interval = "5m" if timeframe in ("1m", "5m") else "1h" if timeframe in ("15m", "1h") else "1d"
         range_str = "5d" if interval == "5m" else "1mo" if interval == "1h" else "6mo"
@@ -105,7 +133,7 @@ class MarketDataFetcher:
         self, symbol: str = "BTC/USDT", timeframe: str = "5m", limit: int = 100
     ) -> List[Candle]:
         """
-        Universal entry point: routes commodities to commodity engine and crypto to exchange engine.
+        Universal entry point: routes futures/commodities to futures engine and crypto to exchange engine.
         """
         canonical, is_comm = self.get_canonical_symbol(symbol)
         if is_comm:

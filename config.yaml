@@ -1,13 +1,14 @@
 # ICT Institutional Market Signal Engine Configuration
 
-# Trading universe to scan (Crypto & Commodities)
+# Trading universe to scan (Crypto, Commodities & US Index Futures)
 symbols:
-  - "BTC/USDT"
-  - "ETH/USDT"
+  - "NQZ2026"    # E-mini Nasdaq 100 Futures (Flagship ICT 2022 Mentorship asset)
+  - "BTC/USDT"   # Bitcoin Spot/Perp
+  - "ETH/USDT"   # Ethereum Spot/Perp
   - "GOLD"       # Comex Gold Futures / Spot Gold (GC=F)
   - "SILVER"     # Comex Silver Futures / Spot Silver (SI=F)
   - "CRUDE"      # WTI Crude Oil Futures (CL=F)
-  - "SOL/USDT"
+  - "SOL/USDT"   # Solana Spot/Perp
 
 # Default fallback SMT Benchmark pair
 smt_benchmark: "ETH/USDT"

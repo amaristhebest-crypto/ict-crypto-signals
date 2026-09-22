@@ -16,6 +16,10 @@ def get_tv_link(symbol: str) -> str:
         return "https://www.tradingview.com/chart/?symbol=TVC:SILVER"
     if clean in ("CRUDE", "CL=F", "OIL", "WTI"):
         return "https://www.tradingview.com/chart/?symbol=TVC:USOIL"
+    if clean in ("NQ", "NQZ2026", "NQZ26", "NQ1!", "NQ=F", "NASDAQ"):
+        return "https://www.tradingview.com/chart/?symbol=CME_MINI:NQ1!"
+    if clean in ("ES", "ESZ2026", "ESZ26", "ES1!", "ES=F", "SP500"):
+        return "https://www.tradingview.com/chart/?symbol=CME_MINI:ES1!"
     return f"https://www.tradingview.com/chart/?symbol=OKX:{clean}"
 
 

@@ -58,15 +58,23 @@ class TestICTEngine(unittest.TestCase):
         c_touch2 = Candle(datetime.now(), 63550, 63600, 63380, 63580, 100) # 2nd bounce
         c_touch3 = Candle(datetime.now(), 63580, 63600, 63390, 63520, 100) # 3rd bounce
 
-        # 2 bounces: valid
-        res2 = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_touch2], target_1=64000, direction=Direction.BULLISH)
+        c_away = Candle(datetime.now(), 63700, 63800, 63600, 63750, 100)  # fully above the FVG
+
+        # Consecutive candles inside the gap = ONE visit, not one bounce per candle.
+        res_cont = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_touch2, c_touch3], target_1=64000, direction=Direction.BULLISH)
+        self.assertTrue(res_cont["is_valid"])
+        self.assertEqual(res_cont["bounces"], 1)
+
+        # Two SEPARATE visits (price leaves the gap in between) = 2 bounces: still valid.
+        res2 = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_away, c_touch2], target_1=64000, direction=Direction.BULLISH)
         self.assertTrue(res2["is_valid"])
         self.assertEqual(res2["bounces"], 2)
 
-        # 3 bounces: invalid (exhausted per Ep 41)
-        res3 = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_touch2, c_touch3], target_1=64000, direction=Direction.BULLISH)
-        self.assertFalse(res3["is_valid"])
-        self.assertEqual(res3["bounces"], 3)
+        # A genuine 3rd visit is exhausted per Ep 41.
+        seq = [c_touch1, c_away, c_touch2, c_away, c_touch3]
+        res_real = ICTSignalDetector.audit_fvg_lifecycle(fvg, seq, target_1=64000, direction=Direction.BULLISH)
+        self.assertFalse(res_real["is_valid"])
+        self.assertEqual(res_real["bounces"], 3)
 
     def test_ep5_ny_lunch_dead_zone(self):
         """Ep 5 & 39: 12:00 - 13:00 EST is a strict No-Trade Dead Zone."""

@@ -14,7 +14,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from src.config.settings import AppConfig
 from src.engine.fetcher import CryptoDataFetcher, MarketDataFetcher
-from src.engine.detector import ICTSignalDetector
+from src.engine.detector import ICTSignalDetector, REJECTIONS, reset_rejections
 from src.alerts.telegram import TelegramNotifier
 from src.alerts.discord import DiscordNotifier
 from src.alerts.console import ConsoleNotifier
@@ -318,6 +318,7 @@ def run_demo():
 
 def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignalDetector):
     logger.info("Scanning asset universe (Crypto, Commodities & US Index Futures) for live ICT setups...")
+    reset_rejections()
     now_utc = datetime.now(timezone.utc)
     LATEST_STATE["status"] = "SCANNING"
     LATEST_STATE["last_scan_utc"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -364,6 +365,11 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
 
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")
+
+    if REJECTIONS:
+        summary = " | ".join(f"{k}: {v}" for k, v in sorted(REJECTIONS.items(), key=lambda x: -x[1]))
+        logger.info(f"  REJECTION FUNNEL -> {summary}")
+        reset_rejections()
 
     LATEST_STATE["status"] = "IDLE - WAITING FOR NEXT BAR"
 

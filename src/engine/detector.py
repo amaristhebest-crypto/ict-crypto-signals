@@ -30,6 +30,19 @@ from src.core.smt import SMTDivergenceDetector
 from src.core.risk_manager import ICTRiskManager
 
 
+# --- diagnostic funnel counters -------------------------------------------
+REJECTIONS = {}
+
+
+def _rej(reason: str):
+    REJECTIONS[reason] = REJECTIONS.get(reason, 0) + 1
+
+
+def reset_rejections():
+    REJECTIONS.clear()
+# ---------------------------------------------------------------------------
+
+
 class ICTSignalDetector:
     def __init__(self, min_risk_reward: float = 2.5, enforce_killzone: bool = True):
         self.min_risk_reward = min_risk_reward
@@ -49,6 +62,7 @@ class ICTSignalDetector:
         closed_through = False
         hit_target_first = False
         currently_inside = False
+        was_inside = False
 
         for idx, c in enumerate(subsequent_candles):
             if direction == Direction.BULLISH:
@@ -60,11 +74,13 @@ class ICTSignalDetector:
                 if c.close < fvg.bottom:
                     closed_through = True
                     break
-                # Check touch / bounce inside FVG
-                if c.low <= fvg.top and c.high >= fvg.bottom:
+                # Check touch / bounce inside FVG (edge-triggered: one bounce per visit)
+                overlapping = c.low <= fvg.top and c.high >= fvg.bottom
+                if overlapping and not was_inside:
                     bounces += 1
-                    if idx == len(subsequent_candles) - 1:
-                        currently_inside = True
+                was_inside = overlapping
+                if overlapping and idx == len(subsequent_candles) - 1:
+                    currently_inside = True
             else:
                 if bounces == 0 and c.low <= target_1 and c.high < fvg.bottom:
                     hit_target_first = True
@@ -72,10 +88,12 @@ class ICTSignalDetector:
                 if c.close > fvg.top:
                     closed_through = True
                     break
-                if c.high >= fvg.bottom and c.low <= fvg.top:
+                overlapping = c.high >= fvg.bottom and c.low <= fvg.top
+                if overlapping and not was_inside:
                     bounces += 1
-                    if idx == len(subsequent_candles) - 1:
-                        currently_inside = True
+                was_inside = overlapping
+                if overlapping and idx == len(subsequent_candles) - 1:
+                    currently_inside = True
 
         return {
             "bounces": bounces,
@@ -109,6 +127,7 @@ class ICTSignalDetector:
 
         if self.enforce_killzone and not is_kz:
             # Strictly reject setups outside valid kill zones or during NY lunch dead zone
+            _rej(f"outside killzone ({active_session[:40]})")
             return None
 
         # 2. HTF Dealing Range & Equilibrium Check (Ep 2 & 29)
@@ -122,6 +141,7 @@ class ICTSignalDetector:
         # 4. Map LTF Swings
         swings = MarketStructureAnalyzer.find_swing_points(ltf_candles, left_bars=2, right_bars=2)
         if len(swings) < 4:
+            _rej("fewer than 4 swing points")
             return None
 
         # 5. Check SMT Divergence if secondary pair provided (Ep 29 & 30)
@@ -147,13 +167,16 @@ class ICTSignalDetector:
 
             # Premium/Discount check: Longs permitted ONLY in Discount (< 50% EQ)
             if sweep_low > htf_eq:
+                _rej("long rejected: not in discount")
                 continue
 
             # Detect MSS (Full body closure with displacement above swing high)
             mss = MarketStructureAnalyzer.detect_market_structure_shift(
-                ltf_candles, swings, sweep_index=sweep_idx, search_window=12
+                ltf_candles, swings, sweep_index=sweep_idx, search_window=12,
+                required_direction=Direction.BULLISH
             )
-            if not mss or mss[1] != Direction.BULLISH:
+            if not mss:
+                _rej("no bullish MSS after sweep")
                 continue
 
             mss_idx, _, broken_level = mss
@@ -162,6 +185,7 @@ class ICTSignalDetector:
             fvgs = PDArrayEngine.find_fair_value_gaps(ltf_candles[sweep_idx : mss_idx + 2])
             bullish_fvgs = [f for f in fvgs if f.direction == Direction.BULLISH]
             if not bullish_fvgs:
+                _rej("no bullish FVG in displacement")
                 continue
 
             entry_fvg = bullish_fvgs[-1]
@@ -184,20 +208,31 @@ class ICTSignalDetector:
             lifecycle = self.audit_fvg_lifecycle(entry_fvg, subsequent_candles, target_1, Direction.BULLISH)
 
             if not lifecycle["is_valid"]:
-                continue  # Rejected: exceeded 2 bounces, closed through, or hit target first
+                if lifecycle["closed_through"]:
+                    _rej("FVG closed through")
+                elif lifecycle["hit_target_first"]:
+                    _rej("runaway: hit target before retrace")
+                else:
+                    _rej(f"FVG exhausted ({lifecycle['bounces']} bounces)")
+                continue
 
             # 8. Check Order Block Mean Threshold Invalidation (Ep 13 & 33)
             ob = PDArrayEngine.find_order_block(ltf_candles, displacement_index=mss_idx, direction=Direction.BULLISH)
             if ob:
                 # If any candle body closed below OB Mean Threshold, invalidate
                 if any(c.close < ob.mean_threshold for c in subsequent_candles):
+                    _rej("bullish OB mean threshold violated")
                     continue
 
             risk = entry_price - stop_loss
-            reward = target_3 - entry_price
+            reward = target_2 - entry_price
             if risk <= 0:
+                _rej("non-positive risk (bullish)")
                 continue
             rr = reward / risk
+
+            if rr < self.min_risk_reward:
+                _rej(f"R:R {rr:.2f} below {self.min_risk_reward}")
 
             if rr >= self.min_risk_reward:
                 status_str = (
@@ -248,13 +283,16 @@ class ICTSignalDetector:
 
             # Premium/Discount check: Shorts permitted ONLY in Premium (> 50% EQ)
             if sweep_high < htf_eq:
+                _rej("short rejected: not in premium")
                 continue
 
             # Detect MSS
             mss = MarketStructureAnalyzer.detect_market_structure_shift(
-                ltf_candles, swings, sweep_index=sweep_idx, search_window=12
+                ltf_candles, swings, sweep_index=sweep_idx, search_window=12,
+                required_direction=Direction.BEARISH
             )
-            if not mss or mss[1] != Direction.BEARISH:
+            if not mss:
+                _rej("no bearish MSS after sweep")
                 continue
 
             mss_idx, _, broken_level = mss
@@ -263,6 +301,7 @@ class ICTSignalDetector:
             fvgs = PDArrayEngine.find_fair_value_gaps(ltf_candles[sweep_idx : mss_idx + 2])
             bearish_fvgs = [f for f in fvgs if f.direction == Direction.BEARISH]
             if not bearish_fvgs:
+                _rej("no bearish FVG in displacement")
                 continue
 
             entry_fvg = bearish_fvgs[-1]
@@ -284,19 +323,30 @@ class ICTSignalDetector:
             lifecycle = self.audit_fvg_lifecycle(entry_fvg, subsequent_candles, target_1, Direction.BEARISH)
 
             if not lifecycle["is_valid"]:
+                if lifecycle["closed_through"]:
+                    _rej("FVG closed through")
+                elif lifecycle["hit_target_first"]:
+                    _rej("runaway: hit target before retrace")
+                else:
+                    _rej(f"FVG exhausted ({lifecycle['bounces']} bounces)")
                 continue
 
             # 8. Check Order Block Mean Threshold Invalidation
             ob = PDArrayEngine.find_order_block(ltf_candles, displacement_index=mss_idx, direction=Direction.BEARISH)
             if ob:
                 if any(c.close > ob.mean_threshold for c in subsequent_candles):
+                    _rej("bearish OB mean threshold violated")
                     continue
 
             risk = stop_loss - entry_price
-            reward = entry_price - target_3
+            reward = entry_price - target_2
             if risk <= 0:
+                _rej("non-positive risk (bearish)")
                 continue
             rr = reward / risk
+
+            if rr < self.min_risk_reward:
+                _rej(f"R:R {rr:.2f} below {self.min_risk_reward}")
 
             if rr >= self.min_risk_reward:
                 status_str = (

@@ -94,7 +94,8 @@ class MarketStructureAnalyzer:
         candles: List[Candle],
         swings: List[SwingPoint],
         sweep_index: int,
-        search_window: int = 12
+        search_window: int = 12,
+        required_direction: Optional[Direction] = None
     ) -> Optional[Tuple[int, Direction, float]]:
         """
         Detects if an MSS occurred after a liquidity sweep.
@@ -117,17 +118,19 @@ class MarketStructureAnalyzer:
             is_displaced = cls.check_displacement(curr, recent_candles)
 
             # Check Bullish MSS: Look for internal swing high to break
-            bullish_swings = [s for s in relevant_swings if s.is_high]
-            if bullish_swings:
-                target_high = bullish_swings[-1]
-                if curr.close > target_high.price and is_displaced:
-                    return i, Direction.BULLISH, target_high.price
+            if required_direction in (None, Direction.BULLISH):
+                bullish_swings = [s for s in relevant_swings if s.is_high]
+                if bullish_swings:
+                    target_high = bullish_swings[-1]
+                    if curr.close > target_high.price and is_displaced:
+                        return i, Direction.BULLISH, target_high.price
 
             # Check Bearish MSS: Look for internal swing low to break
-            bearish_swings = [s for s in relevant_swings if not s.is_high]
-            if bearish_swings:
-                target_low = bearish_swings[-1]
-                if curr.close < target_low.price and is_displaced:
-                    return i, Direction.BEARISH, target_low.price
+            if required_direction in (None, Direction.BEARISH):
+                bearish_swings = [s for s in relevant_swings if not s.is_high]
+                if bearish_swings:
+                    target_low = bearish_swings[-1]
+                    if curr.close < target_low.price and is_displaced:
+                        return i, Direction.BEARISH, target_low.price
 
         return None

@@ -15,6 +15,7 @@ from src.alerts.telegram import TelegramNotifier
 from src.alerts.discord import DiscordNotifier
 from src.alerts.console import ConsoleNotifier
 from src.core.models import Candle
+from src.core.sessions import SessionDetector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,9 +117,13 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
 
     for symbol in config.symbols:
         try:
-            logger.info(f"Auditing order flow for {symbol}...")
             ltf = fetcher.fetch_candles(symbol, timeframe=config.ltf_timeframe, limit=60)
             htf = fetcher.fetch_candles(symbol, timeframe=config.htf_timeframe, limit=40)
+
+            current_price = ltf[-1].close
+            session = SessionDetector.get_active_session(ltf[-1].timestamp)
+
+            logger.info(f"Auditing order flow for {symbol} | Live Price: ${current_price:,.2f} | {session}")
 
             signal = detector.analyze_market(
                 symbol=symbol,
@@ -136,7 +141,7 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
                 if config.discord_webhook_url:
                     DiscordNotifier(config.discord_webhook_url).send_signal(signal)
             else:
-                logger.info(f"  ↳ {symbol}: Price is delivering within balance or no validated sweep/MSS. Standing aside.")
+                logger.info(f"  ↳ {symbol} (${current_price:,.2f}): In balance / No unresolved sweep & MSS. Standing aside.")
 
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")

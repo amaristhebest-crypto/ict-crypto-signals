@@ -1,17 +1,20 @@
-# ICT Institutional Crypto Signal Engine Configuration
+# ICT Institutional Market Signal Engine Configuration
 
-# Trading universe to scan
+# Trading universe to scan (Crypto & Commodities)
 symbols:
   - "BTC/USDT"
   - "ETH/USDT"
+  - "GOLD"       # Comex Gold Futures / Spot Gold (GC=F)
+  - "SILVER"     # Comex Silver Futures / Spot Silver (SI=F)
+  - "CRUDE"      # WTI Crude Oil Futures (CL=F)
   - "SOL/USDT"
 
-# SMT Benchmark pair (correlated asset)
+# Default fallback SMT Benchmark pair
 smt_benchmark: "ETH/USDT"
 
 # Timeframes
 ltf_timeframe: "5m"      # Lower timeframe for liquidity sweeps, MSS, and FVG entry
-htf_timeframe: "4h"      # Higher timeframe for dealing range equilibrium & macro DOL
+htf_timeframe: "1h"      # Higher timeframe for dealing range equilibrium & macro DOL
 
 # Execution filters
 min_risk_reward: 2.5     # Minimum acceptable R:R ratio

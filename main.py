@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from src.config.settings import AppConfig
-from src.engine.fetcher import CryptoDataFetcher
+from src.engine.fetcher import CryptoDataFetcher, MarketDataFetcher
 from src.engine.detector import ICTSignalDetector
 from src.alerts.telegram import TelegramNotifier
 from src.alerts.discord import DiscordNotifier
@@ -107,17 +107,18 @@ def run_demo():
 
 
 def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignalDetector):
-    logger.info("Scanning crypto pairs for live ICT setups...")
-
-    # Fetch secondary benchmark for SMT
-    smt_candles = None
-    try:
-        smt_candles = fetcher.fetch_candles(config.smt_benchmark, timeframe=config.ltf_timeframe, limit=50)
-    except Exception as e:
-        logger.warning(f"Failed to fetch SMT benchmark {config.smt_benchmark}: {e}")
+    logger.info("Scanning asset universe (Crypto & Commodities) for live ICT setups...")
 
     for symbol in config.symbols:
         try:
+            # Determine appropriate SMT benchmark for the specific asset
+            smt_benchmark = MarketDataFetcher.get_smt_benchmark_pair(symbol)
+            smt_candles = None
+            try:
+                smt_candles = fetcher.fetch_candles(smt_benchmark, timeframe=config.ltf_timeframe, limit=50)
+            except Exception:
+                pass
+
             ltf = fetcher.fetch_candles(symbol, timeframe=config.ltf_timeframe, limit=60)
             htf = fetcher.fetch_candles(symbol, timeframe=config.htf_timeframe, limit=40)
 
@@ -131,7 +132,7 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
                 ltf_candles=ltf,
                 htf_candles=htf,
                 smt_candles=smt_candles,
-                smt_symbol=config.smt_benchmark,
+                smt_symbol=smt_benchmark,
                 timeframe=config.ltf_timeframe,
             )
 

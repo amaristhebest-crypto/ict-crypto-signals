@@ -8,6 +8,17 @@ from src.core.models import ICTSignal, Direction
 logger = logging.getLogger(__name__)
 
 
+def get_tv_link(symbol: str) -> str:
+    clean = symbol.upper().replace("/", "").replace(":USDT", "USDT")
+    if clean in ("GOLD", "GC=F", "XAUUSD"):
+        return "https://www.tradingview.com/chart/?symbol=TVC:GOLD"
+    if clean in ("SILVER", "SI=F", "XAGUSD"):
+        return "https://www.tradingview.com/chart/?symbol=TVC:SILVER"
+    if clean in ("CRUDE", "CL=F", "OIL", "WTI"):
+        return "https://www.tradingview.com/chart/?symbol=TVC:USOIL"
+    return f"https://www.tradingview.com/chart/?symbol=OKX:{clean}"
+
+
 class DiscordNotifier:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
@@ -21,8 +32,7 @@ class DiscordNotifier:
 
         ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
         ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
-        clean_sym = signal.symbol.replace("/", "").replace(":USDT", "USDT")
-        tv_link = f"https://www.tradingview.com/chart/?symbol=OKX:{clean_sym}"
+        tv_link = get_tv_link(signal.symbol)
 
         embed = {
             "title": f"⚡ ICT Signal: {signal.symbol} — {direction_str}",

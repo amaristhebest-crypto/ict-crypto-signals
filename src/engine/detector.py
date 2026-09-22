@@ -166,7 +166,9 @@ class ICTSignalDetector:
 
             entry_fvg = bullish_fvgs[-1]
             entry_price = entry_fvg.consequent_encroachment
-            stop_loss = sweep_low - 20.0  # Conservative stop below sweep low (Ep 6)
+            # Asset-adaptive protective stop buffer (0.05% of price or min tick buffer)
+            buffer = max(sweep_low * 0.0005, 0.05)
+            stop_loss = sweep_low - buffer  # Conservative stop below sweep low (Ep 6)
 
             # Calculate OTE targets & HTF DOL
             displacement_high = max(c.high for c in ltf_candles[sweep_idx : mss_idx + 2])
@@ -265,7 +267,9 @@ class ICTSignalDetector:
 
             entry_fvg = bearish_fvgs[-1]
             entry_price = entry_fvg.consequent_encroachment
-            stop_loss = sweep_high + 20.0
+            # Asset-adaptive protective stop buffer (0.05% of price or min tick buffer)
+            buffer = max(sweep_high * 0.0005, 0.05)
+            stop_loss = sweep_high + buffer
 
             displacement_low = min(c.low for c in ltf_candles[sweep_idx : mss_idx + 2])
             ote_levels = ICTRiskManager.calculate_ote_levels(displacement_low, sweep_high, Direction.BEARISH)

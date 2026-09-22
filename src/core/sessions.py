@@ -6,12 +6,13 @@ import zoneinfo
 
 NY_TZ = zoneinfo.ZoneInfo("America/New_York")
 UTC_TZ = zoneinfo.ZoneInfo("UTC")
+IST_TZ = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 
 class SessionDetector:
     """
     Identifies active ICT Kill Zones and session benchmarks.
-    All logic strictly maps to NY Time as mandated by Michael Huddleston.
+    Displays both NY Time and Indian Standard Time (IST - UTC+5:30).
     """
 
     @staticmethod
@@ -20,48 +21,54 @@ class SessionDetector:
             dt = dt.replace(tzinfo=UTC_TZ)
         return dt.astimezone(NY_TZ)
 
+    @staticmethod
+    def to_ist_time(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC_TZ)
+        return dt.astimezone(IST_TZ)
+
     @classmethod
     def get_active_session(cls, dt: datetime) -> str:
         ny = cls.to_ny_time(dt)
         t = ny.time()
 
-        # New York Lunch Dead Zone: 12:00 PM - 1:00 PM EST (Hard No-Trade Zone per Ep 5 & 39)
+        # New York Lunch Dead Zone: 12:00 PM - 1:00 PM EST (09:30 PM - 10:30 PM IST)
         if time(12, 0) <= t < time(13, 0):
-            return "New York Lunch Dead Zone (12:00-13:00 EST - DO NOT TRADE)"
+            return "NY Lunch Dead Zone (12:00-13:00 EST / 09:30 PM-10:30 PM IST - DO NOT TRADE)"
 
-        # New York Afternoon Session: 13:30 - 16:00 EST (Ep 41)
+        # New York Afternoon Session: 13:30 - 16:00 EST (11:00 PM - 01:30 AM IST)
         if time(13, 30) <= t < time(16, 0):
             if time(14, 0) <= t < time(15, 0):
-                return "ICT Silver Bullet PM (14:00-15:00 EST)"
-            return "New York PM Session (13:30-16:00 EST)"
+                return "ICT Silver Bullet PM (14:00-15:00 EST / 11:30 PM-12:30 AM IST)"
+            return "New York PM Session (13:30-16:00 EST / 11:00 PM-01:30 AM IST)"
 
-        # Silver Bullet AM Window: 10:00 - 11:00 EST
+        # Silver Bullet AM Window: 10:00 - 11:00 EST (07:30 PM - 08:30 PM IST)
         if time(10, 0) <= t < time(11, 0):
-            return "ICT Silver Bullet AM (10:00-11:00 EST)"
+            return "ICT Silver Bullet AM (10:00-11:00 EST / 07:30 PM-08:30 PM IST)"
 
-        # New York Open Kill Zone: 07:00 - 10:00 EST (Ep 4 & 8)
+        # New York Open Kill Zone: 07:00 - 10:00 EST (04:30 PM - 07:30 PM IST)
         if time(7, 0) <= t < time(10, 0):
             if time(9, 30) <= t < time(9, 45):
-                return "New York Open (NYSE Bell Open 09:30 EST)"
+                return "New York Open (NYSE Bell 09:30 EST / 07:00 PM IST)"
             if time(8, 30) <= t < time(10, 0):
-                return "New York Morning Hunt Window (08:30-10:00 EST)"
-            return "New York Open Kill Zone (07:00-10:00 EST)"
+                return "NY Morning Hunt Window (08:30-10:00 EST / 06:00 PM-07:30 PM IST)"
+            return "New York Open Kill Zone (07:00-10:00 EST / 04:30 PM-07:30 PM IST)"
 
-        # London Close Kill Zone: 10:00 - 12:00 EST
+        # London Close Kill Zone: 10:00 - 12:00 EST (07:30 PM - 09:30 PM IST)
         if time(10, 0) <= t < time(12, 0):
-            return "London Close Kill Zone (10:00-12:00 EST)"
+            return "London Close Kill Zone (10:00-12:00 EST / 07:30 PM-09:30 PM IST)"
 
-        # London Open Kill Zone: 02:00 - 05:00 EST (Ep 8)
+        # London Open Kill Zone: 02:00 - 05:00 EST (11:30 AM - 02:30 PM IST)
         if time(2, 0) <= t < time(5, 0):
-            return "London Open Kill Zone (02:00-05:00 EST)"
+            return "London Open Kill Zone (02:00-05:00 EST / 11:30 AM-02:30 PM IST)"
 
-        # Asian Range: 20:00 - 00:00 EST
+        # Asian Range: 20:00 - 00:00 EST (05:30 AM - 09:30 AM IST)
         if time(20, 0) <= t or t < time(0, 0):
-            return "Asian Range (20:00-00:00 EST)"
+            return "Asian Range (20:00-00:00 EST / 05:30 AM-09:30 AM IST)"
 
-        # Central Bank Dealers Range (CBDR): 14:00 - 20:00 EST
+        # Central Bank Dealers Range (CBDR): 14:00 - 20:00 EST (11:30 PM - 05:30 AM IST)
         if time(14, 0) <= t < time(20, 0):
-            return "CBDR Range (14:00-20:00 EST)"
+            return "CBDR Range (14:00-20:00 EST / 11:30 PM-05:30 AM IST)"
 
         return "Out-of-Killzone / Interbank Consolidation"
 
@@ -75,7 +82,7 @@ class SessionDetector:
             for kz in [
                 "London Open",
                 "New York Open",
-                "New York Morning",
+                "Morning Hunt",
                 "New York PM",
                 "London Close",
                 "Silver Bullet",

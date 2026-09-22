@@ -24,12 +24,18 @@ class TelegramNotifier:
 
         confluence_list = "\n".join([f"  • {c}" for c in signal.confluence_factors])
 
+        ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
+        ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
+        clean_sym = signal.symbol.replace("/", "").replace(":USDT", "USDT")
+        tv_link = f"https://www.tradingview.com/chart/?symbol=OKX:{clean_sym}"
+
         message = (
             f"⚡ *ICT INSTITUTIONAL CRYPTO SIGNAL* ⚡\n\n"
             f"{icon} *Asset:* `{signal.symbol}` ({signal.timeframe})\n"
             f"🎯 *Direction:* *{direction_str}*\n"
             f"🏛 *Setup:* `{signal.setup_name}`\n"
-            f"🕒 *Session:* `{signal.session_name}`\n\n"
+            f"🕒 *Session:* `{signal.session_name}`\n"
+            f"🇮🇳 *Time (India):* `{ist_time}` ({ny_time} NY)\n\n"
             f"📊 *TRADE PARAMETERS:*\n"
             f"  • *Limit Entry:* `${signal.entry_price:,.2f}`\n"
             f"  • *Stop Loss:* `${signal.stop_loss:,.2f}`\n"
@@ -37,10 +43,10 @@ class TelegramNotifier:
             f"  • *Target 2 (Runner TP):* `${signal.target_2:,.2f}`\n"
             f"  • *Target 3 (Macro DOL):* `${signal.target_3:,.2f}`\n"
             f"  • *Risk/Reward Ratio:* `1:{signal.risk_reward_ratio:.2f}R`\n\n"
+            f"📈 [Open TradingView Live Chart]({tv_link})\n\n"
             f"🧠 *CONFLUENCES & INSTITUTIONAL FOOTPRINTS:*\n"
             f"{confluence_list}\n\n"
             f"⚠️ *INVALIDATION:* {signal.invalidation_notes}\n"
-            f"⏱ *Timestamp:* `{signal.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}`"
         )
 
         try:

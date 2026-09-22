@@ -19,9 +19,14 @@ class DiscordNotifier:
         color = 0x10B981 if signal.direction == Direction.BULLISH else 0xEF4444
         direction_str = "🟢 LONG" if signal.direction == Direction.BULLISH else "🔴 SHORT"
 
+        ist_time = SessionDetector.to_ist_time(signal.timestamp).strftime("%d %b %Y, %I:%M %p IST")
+        ny_time = SessionDetector.to_ny_time(signal.timestamp).strftime("%I:%M %p EDT")
+        clean_sym = signal.symbol.replace("/", "").replace(":USDT", "USDT")
+        tv_link = f"https://www.tradingview.com/chart/?symbol=OKX:{clean_sym}"
+
         embed = {
             "title": f"⚡ ICT Signal: {signal.symbol} — {direction_str}",
-            "description": f"**Setup:** {signal.setup_name}\n**Session:** {signal.session_name}",
+            "description": f"**Setup:** {signal.setup_name}\n**Session:** {signal.session_name}\n**Time (India):** {ist_time} ({ny_time} NY)\n[📈 Open TradingView Chart]({tv_link})",
             "color": color,
             "fields": [
                 {"name": "Limit Entry", "value": f"${signal.entry_price:,.2f}", "inline": True},

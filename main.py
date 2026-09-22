@@ -1,12 +1,17 @@
 """
-Main runner for ICT Automated Crypto Signals Engine.
-Supports continuous daemon monitoring, one-shot scan, and deterministic ICT simulation.
+Main runner for ICT Automated Multi-Asset Signal Engine.
+Supports continuous daemon monitoring, one-shot scan, deterministic simulation,
+and lightweight 24/7 cloud health dashboard server (Render/Railway/Fly.io compatible).
 """
 import sys
+import os
 import time
 import argparse
 import logging
+import threading
+import json
 from datetime import datetime, timezone, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from src.config.settings import AppConfig
 from src.engine.fetcher import CryptoDataFetcher, MarketDataFetcher
@@ -24,6 +29,91 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ICT-Engine")
 
+# Shared state for 24/7 cloud health checks and web dashboard
+LATEST_STATE = {
+    "status": "INITIALIZING",
+    "last_scan_utc": "",
+    "last_scan_ist": "",
+    "active_session": "",
+    "prices": {},
+    "monitored_symbols": [],
+}
+
+
+class CloudHealthServer(BaseHTTPRequestHandler):
+    """
+    Lightweight HTTP server enabling 100% free hosting on Render/Railway/Fly.io.
+    Provides /health endpoint for uptime monitors and / for a live status dashboard.
+    """
+
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "healthy", "service": "ict-multi-asset-signals"}).encode())
+            return
+
+        # HTML Live Status Dashboard
+        prices_html = "".join(
+            [
+                f"<div style='background:#181f2e;padding:12px;border-radius:6px;margin-bottom:8px;display:flex;justify-content:space-between;'>"
+                f"<span style='font-weight:600;'>{sym}</span>"
+                f"<span style='color:#38bdf8;font-weight:bold;'>${price:,.2f}</span>"
+                f"</div>"
+                for sym, price in LATEST_STATE["prices"].items()
+            ]
+        )
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICT Automated Signal Engine — 24/7 Cloud</title>
+<style>
+  body {{ background: #0b0e14; color: #d1d4dc; font-family: -apple-system, sans-serif; padding: 24px; max-width: 600px; margin: 0 auto; }}
+  .card {{ background: #121722; border: 1px solid #1f2430; border-radius: 8px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
+  .badge {{ background: #064e3b; color: #34d399; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="margin:0;font-size:18px;color:#f0f3f6;">⚡ ICT 24/7 Signal Engine</h2>
+      <span class="badge">● ONLINE 24/7</span>
+    </div>
+    <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Active Session:</b> {LATEST_STATE["active_session"]}</p>
+    <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Last Scan (India):</b> {LATEST_STATE["last_scan_ist"]}</p>
+    <hr style="border:0;border-top:1px solid #1f2430;margin:16px 0;">
+    <h3 style="font-size:14px;color:#f0f3f6;margin-bottom:12px;">Live Market Prices</h3>
+    {prices_html or "<p style='color:#64748b;font-size:13px;'>Starting first scan...</p>"}
+    <div style="margin-top:20px;text-align:center;font-size:12px;color:#64748b;">
+      Interbank Price Delivery Algorithm • ICT 2022 Mentorship Model
+    </div>
+  </div>
+</body>
+</html>"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+    def log_message(self, format, *args):
+        # Silence console access logs to keep terminal output clean
+        pass
+
+
+def start_cloud_health_server(port: int = 8080):
+    try:
+        server = HTTPServer(("0.0.0.0", port), CloudHealthServer)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        logger.info(f"Cloud 24/7 Health Dashboard active on port {port} (http://0.0.0.0:{port})")
+    except Exception as e:
+        logger.warning(f"Could not bind cloud HTTP server on port {port}: {e}")
+
 
 def run_demo():
     """
@@ -33,7 +123,7 @@ def run_demo():
     logger.info("Running deterministic ICT Demo Simulation...")
     detector = ICTSignalDetector(min_risk_reward=2.0)
 
-    # 14:00 UTC = 10:00 AM EST (New York Morning Hunt Window 08:30 - 10:00 EST)
+    # 14:00 UTC = 10:00 AM EST (New York Morning Hunt Window 08:30 - 10:00 EST / 06:00 PM - 07:30 PM IST)
     base_time = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc)
 
     # Generate HTF 4H Candles (Dealing range $61,000 - $68,000)
@@ -108,6 +198,12 @@ def run_demo():
 
 def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignalDetector):
     logger.info("Scanning asset universe (Crypto & Commodities) for live ICT setups...")
+    now_utc = datetime.now(timezone.utc)
+    LATEST_STATE["status"] = "SCANNING"
+    LATEST_STATE["last_scan_utc"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    LATEST_STATE["last_scan_ist"] = SessionDetector.to_ist_time(now_utc).strftime("%d %b %Y, %I:%M %p IST")
+    LATEST_STATE["active_session"] = SessionDetector.get_active_session(now_utc)
+    LATEST_STATE["monitored_symbols"] = config.symbols
 
     for symbol in config.symbols:
         try:
@@ -124,6 +220,7 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
 
             current_price = ltf[-1].close
             session = SessionDetector.get_active_session(ltf[-1].timestamp)
+            LATEST_STATE["prices"][symbol] = current_price
 
             logger.info(f"Auditing order flow for {symbol} | Live Price: ${current_price:,.2f} | {session}")
 
@@ -148,19 +245,25 @@ def scan_live(config: AppConfig, fetcher: CryptoDataFetcher, detector: ICTSignal
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")
 
+    LATEST_STATE["status"] = "IDLE - WAITING FOR NEXT BAR"
+
 
 def main():
-    parser = argparse.ArgumentParser(description="ICT Automated Crypto Signal Engine")
+    parser = argparse.ArgumentParser(description="ICT Automated Multi-Asset Signal Engine")
     parser.add_argument("--mode", choices=["run", "once", "demo"], default="demo", help="Execution mode")
     parser.add_argument("--config", default="config.yaml", help="Path to config file")
     args = parser.parse_args()
+
+    # Start Cloud Health & Live Dashboard on port specified by cloud provider or default 8080
+    port = int(os.getenv("PORT", "8080"))
+    start_cloud_health_server(port)
 
     if args.mode == "demo":
         run_demo()
         return
 
     config = AppConfig.load(args.config)
-    fetcher = CryptoDataFetcher(exchange_id="okx")
+    fetcher = MarketDataFetcher(exchange_id="okx")
     detector = ICTSignalDetector(min_risk_reward=config.min_risk_reward)
 
     if args.mode == "once":

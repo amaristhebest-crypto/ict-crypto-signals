@@ -33,7 +33,8 @@ def run_demo():
     logger.info("Running deterministic ICT Demo Simulation...")
     detector = ICTSignalDetector(min_risk_reward=2.0)
 
-    base_time = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)  # 08:00 EST
+    # 14:00 UTC = 10:00 AM EST (New York Morning Hunt Window 08:30 - 10:00 EST)
+    base_time = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc)
 
     # Generate HTF 4H Candles (Dealing range $61,000 - $68,000)
     htf_candles = [

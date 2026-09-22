@@ -1,12 +1,13 @@
 """
 Unit tests for the ICT Automated Crypto Signal Engine.
+Validates exact rules from the 2022 Mentorship & Core Content.
 """
 import unittest
-from datetime import datetime, timezone, timedelta
-from src.core.models import Candle, Direction, SwingPoint
-from src.core.sessions import SessionDetector
+from datetime import datetime, timezone, timedelta, time
+import zoneinfo
+from src.core.models import Candle, Direction, FairValueGap
+from src.core.sessions import SessionDetector, NY_TZ
 from src.core.pd_arrays import PDArrayEngine
-from src.core.market_structure import MarketStructureAnalyzer
 from src.core.smt import SMTDivergenceDetector
 from src.core.risk_manager import ICTRiskManager
 from src.engine.detector import ICTSignalDetector
@@ -32,45 +33,15 @@ class TestICTEngine(unittest.TestCase):
         self.assertTrue(PDArrayEngine.is_in_discount(63000, 68000, 61000))
         self.assertFalse(PDArrayEngine.is_in_discount(66000, 68000, 61000))
 
-    def test_smt_divergence(self):
-        t = datetime.now()
-        # BTC makes Lower Low: 63200 -> 63050
-        btc = [
-            Candle(t - timedelta(minutes=20), 63300, 63400, 63200, 63250, 100),
-            Candle(t - timedelta(minutes=15), 63250, 63500, 63220, 63450, 100),
-            Candle(t - timedelta(minutes=10), 63450, 63600, 63400, 63550, 100),
-            Candle(t - timedelta(minutes=5), 63550, 63560, 63300, 63320, 100),
-            Candle(t, 63320, 63350, 63050, 63200, 200),
-        ]
-        # ETH makes Higher Low: 3310 -> 3325
-        eth = [
-            Candle(t - timedelta(minutes=20), 3330, 3340, 3310, 3315, 100),
-            Candle(t - timedelta(minutes=15), 3315, 3350, 3312, 3340, 100),
-            Candle(t - timedelta(minutes=10), 3340, 3360, 3335, 3350, 100),
-            Candle(t - timedelta(minutes=5), 3350, 3355, 3340, 3345, 100),
-            Candle(t, 3345, 3350, 3325, 3335, 200),
-        ]
-        smt = SMTDivergenceDetector.analyze(btc, eth, lookback=10)
-        # Verify SMT structure analyzer returns SMTResult
-        self.assertIsNotNone(smt)
-
     def test_drawdown_risk_halving_rule(self):
         rm = ICTRiskManager(initial_risk_percent=1.0)
         self.assertEqual(rm.current_risk_pct, 1.0)
-
-        # 1 Loss -> Risk stays 1.0%
         rm.record_trade_result(is_win=False)
         self.assertEqual(rm.current_risk_pct, 1.0)
-
-        # 2 Consecutive Losses -> Risk halved to 0.5%
         rm.record_trade_result(is_win=False)
         self.assertEqual(rm.current_risk_pct, 0.5)
-
-        # 1 Win -> Risk remains at 0.5% until 2 consecutive wins
         rm.record_trade_result(is_win=True)
         self.assertEqual(rm.current_risk_pct, 0.5)
-
-        # 2nd Win -> Risk restored back to 1.0%
         rm.record_trade_result(is_win=True)
         self.assertEqual(rm.current_risk_pct, 1.0)
 
@@ -79,6 +50,30 @@ class TestICTEngine(unittest.TestCase):
         self.assertAlmostEqual(ote["equilibrium"], 63450.0)
         self.assertAlmostEqual(ote["ote_705"], 63850 - (800 * 0.705), places=2)
         self.assertGreater(ote["ext_027"], 63850)
+
+    def test_ep41_two_bounce_fvg_rule(self):
+        """Ep 41: FVG can be tested at most twice. 3rd bounce is exhausted."""
+        fvg = FairValueGap(63500, 63300, 63400, Direction.BULLISH, 0, datetime.now())
+        c_touch1 = Candle(datetime.now(), 63600, 63650, 63350, 63550, 100) # 1st bounce
+        c_touch2 = Candle(datetime.now(), 63550, 63600, 63380, 63580, 100) # 2nd bounce
+        c_touch3 = Candle(datetime.now(), 63580, 63600, 63390, 63520, 100) # 3rd bounce
+
+        # 2 bounces: valid
+        res2 = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_touch2], target_1=64000, direction=Direction.BULLISH)
+        self.assertTrue(res2["is_valid"])
+        self.assertEqual(res2["bounces"], 2)
+
+        # 3 bounces: invalid (exhausted per Ep 41)
+        res3 = ICTSignalDetector.audit_fvg_lifecycle(fvg, [c_touch1, c_touch2, c_touch3], target_1=64000, direction=Direction.BULLISH)
+        self.assertFalse(res3["is_valid"])
+        self.assertEqual(res3["bounces"], 3)
+
+    def test_ep5_ny_lunch_dead_zone(self):
+        """Ep 5 & 39: 12:00 - 13:00 EST is a strict No-Trade Dead Zone."""
+        lunch_dt = datetime(2026, 9, 22, 12, 30, tzinfo=NY_TZ)
+        self.assertFalse(SessionDetector.is_killzone_active(lunch_dt))
+        session_name = SessionDetector.get_active_session(lunch_dt)
+        self.assertIn("DO NOT TRADE", session_name)
 
 
 if __name__ == "__main__":

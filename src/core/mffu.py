@@ -44,7 +44,7 @@ MFFU_CONTRACTS = {
         "name": "Micro Ether Futures",
         "full_ticker": "ETH",
         "tv_symbol": "CME:MET1!",
-        "point_value_micro": 0.50,     # $0.50 per $1.00 move
+        "point_value_micro": 0.10,     # $0.10 per $1.00 move (MET = 0.1 ETH)
         "default_qty": 2,
     },
     "SILVER": {

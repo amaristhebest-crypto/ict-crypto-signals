@@ -19,7 +19,11 @@ htf_timeframe: "1h"      # Higher timeframe for dealing range equilibrium & macr
 
 # Execution filters
 min_risk_reward: 2.5     # Minimum acceptable R:R ratio
-fixed_risk_percent: 1.0  # Risk per trade (% of account)
+fixed_risk_percent: 0.5  # Risk per trade (% of $50K = $250).
+                         # MFFU $50K EOD max loss is $2,000 -> 0.5% gives 8 units
+                         # of risk before the account is dead. 1.0% ($500) gives
+                         # only 4 and is NOT survivable across a normal losing
+                         # streak. Raise only after the $2,000 MLL is locked.
 scan_interval_seconds: 60
 
 # Alerts / Webhooks (Leave blank to use console only or configure via .env)

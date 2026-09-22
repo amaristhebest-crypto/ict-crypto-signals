@@ -165,7 +165,7 @@ class CloudHealthServer(BaseHTTPRequestHandler):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ICT Automated Signal Engine — 24/7 Cloud</title>
+<title>MFFU 50K — ICT Automated Signal Engine</title>
 <style>
   body {{ background: #0b0e14; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px; max-width: 650px; margin: 0 auto; }}
   .card {{ background: #121722; border: 1px solid #1f2430; border-radius: 10px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
@@ -176,14 +176,32 @@ class CloudHealthServer(BaseHTTPRequestHandler):
 <body>
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <h2 style="margin:0;font-size:18px;color:#f0f3f6;">⚡ ICT 24/7 Signal Engine</h2>
+      <h2 style="margin:0;font-size:18px;color:#f0f3f6;">⚡ MFFU 50K Signal Engine</h2>
       <span class="badge">● ONLINE 24/7</span>
     </div>
     <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Active Session:</b> {LATEST_STATE["active_session"]}</p>
     <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Last Scan (India):</b> {LATEST_STATE["last_scan_ist"]}</p>
+
+    <!-- MFFU 50K Account Parameters Guard Box -->
+    <div style="background:#141c2b;border:1px solid #2563eb;border-radius:8px;padding:14px;margin:14px 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:bold;color:#60a5fa;font-size:13px;">🏛 MFFU $50,000 ACCOUNT GUARD</span>
+        <span style="background:#2563eb;color:#fff;font-size:10px;font-weight:bold;padding:2px 8px;border-radius:4px;">END-OF-DAY EOD</span>
+      </div>
+      <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;line-height:1.6;">
+        <div>• Account Capital: <b>$50,000.00</b></div>
+        <div>• Target (+6%): <b style="color:#34d399;">+$3,000.00 ($53k)</b></div>
+        <div>• Invalidation Floor: <b style="color:#f87171;">$48,000.00 (EOD)</b></div>
+        <div>• 50% Daily Profit Cap: <b>$1,500.00 Max</b></div>
+      </div>
+      <div style="margin-top:10px;padding-top:8px;border-top:1px solid #1e293b;font-size:11px;color:#cbd5e1;line-height:1.7;">
+        <b>Tradovate Tickers:</b> <span style="color:#fbbf24;font-weight:bold;">MNQ</span> (Nasdaq) &nbsp;|&nbsp; <span style="color:#fbbf24;font-weight:bold;">MGC</span> (Gold) &nbsp;|&nbsp; <span style="color:#fbbf24;font-weight:bold;">MBT</span> (Bitcoin) &nbsp;|&nbsp; <span style="color:#fbbf24;font-weight:bold;">MCL</span> (Crude)<br>
+        <b>Strict Position Sizing:</b> Always trade <b>2 to 3 Micro Contracts</b> (Never full Minis!)
+      </div>
+    </div>
     
     <hr>
-    <h3 style="font-size:14px;color:#f0f3f6;margin:0 0 10px 0;">⚡ Active Trade Execution Plans</h3>
+    <h3 style="font-size:14px;color:#f0f3f6;margin:0 0 10px 0;">⚡ MFFU Active Trade Execution Plans</h3>
     {signals_html}
 
     <hr>
@@ -191,7 +209,7 @@ class CloudHealthServer(BaseHTTPRequestHandler):
     {prices_html or "<p style='color:#64748b;font-size:13px;'>Starting first scan...</p>"}
 
     <div style="margin-top:20px;text-align:center;font-size:11px;color:#64748b;">
-      Interbank Price Delivery Algorithm • ICT 2022 Mentorship Model
+      My Funded Futures (MFFU) Algorithmic Model • ICT 2022 Mentorship
     </div>
   </div>
 </body>

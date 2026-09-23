@@ -105,3 +105,72 @@ class SessionDetector:
             if ny_dt.hour == 0:
                 return c.open
         return candles[0].open
+
+    @classmethod
+    def get_session_liquidity_map(cls, candles: list) -> dict:
+        """
+        Builds the institutional Session Liquidity Map:
+        - NY Midnight Open (00:00 ET) dealing benchmark
+        - Asian Range (19:00 - 02:00 ET): High & Low, tracking if swept
+        - London Range (02:00 - 05:00 ET): High & Low, tracking if swept
+        - Current Dealing Bias (Discount vs Premium relative to Midnight Open)
+        """
+        if not candles:
+            return {}
+        latest_ny = cls.to_ny_time(candles[-1].timestamp)
+        today_date = latest_ny.date()
+
+        midnight_open = None
+        asian_candles = []
+        london_candles = []
+        after_asia_candles = []
+        after_london_candles = []
+
+        for c in candles:
+            ny = cls.to_ny_time(c.timestamp)
+            # Asian range: evening before (date = today - 1 and hour >= 19) OR (date = today and hour < 2)
+            if (ny.date() == today_date and ny.hour < 2) or (ny.date() < today_date and ny.hour >= 19):
+                asian_candles.append(c)
+            elif ny.date() == today_date and ny.hour >= 2:
+                after_asia_candles.append(c)
+
+            # Midnight Open: today at hour 0
+            if ny.date() == today_date and ny.hour == 0 and midnight_open is None:
+                midnight_open = c.open
+
+            # London range: today between 02:00 and 05:00
+            if ny.date() == today_date and 2 <= ny.hour < 5:
+                london_candles.append(c)
+            elif ny.date() == today_date and ny.hour >= 5:
+                after_london_candles.append(c)
+
+        asian_hi = max(c.high for c in asian_candles) if asian_candles else None
+        asian_lo = min(c.low for c in asian_candles) if asian_candles else None
+        london_hi = max(c.high for c in london_candles) if london_candles else None
+        london_lo = min(c.low for c in london_candles) if london_candles else None
+
+        # Detect sweeps
+        asian_hi_swept = any(c.high > asian_hi for c in after_asia_candles) if (asian_hi and after_asia_candles) else False
+        asian_lo_swept = any(c.low < asian_lo for c in after_asia_candles) if (asian_lo and after_asia_candles) else False
+        london_hi_swept = any(c.high > london_hi for c in after_london_candles) if (london_hi and after_london_candles) else False
+        london_lo_swept = any(c.low < london_lo for c in after_london_candles) if (london_lo and after_london_candles) else False
+
+        current_px = candles[-1].close
+        bias = "NEUTRAL"
+        if midnight_open:
+            bias = "DISCOUNT (Bullish Hunting Zone)" if current_px < midnight_open else "PREMIUM (Bearish Hunting Zone)"
+
+        return {
+            "current_price": current_px,
+            "midnight_open": midnight_open,
+            "bias": bias,
+            "asian_high": asian_hi,
+            "asian_low": asian_lo,
+            "asian_hi_swept": asian_hi_swept,
+            "asian_lo_swept": asian_lo_swept,
+            "london_high": london_hi,
+            "london_low": london_lo,
+            "london_hi_swept": london_hi_swept,
+            "london_lo_swept": london_lo_swept,
+        }
+

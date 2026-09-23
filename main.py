@@ -56,6 +56,7 @@ LATEST_STATE = {
     "recent_signals": [],
     "is_demo": False,
     "last_funnel": "",
+    "liquidity_map": {},
 }
 
 
@@ -111,6 +112,36 @@ class CloudHealthServer(BaseHTTPRequestHandler):
         signals = list(LATEST_STATE["recent_signals"])
         is_demo = LATEST_STATE["is_demo"]
         funnel = LATEST_STATE["last_funnel"]
+        lmap = dict(LATEST_STATE.get("liquidity_map", {}))
+
+        liquidity_html = ""
+        if lmap and lmap.get("midnight_open"):
+            cur = lmap.get("current_price", 0)
+            mo = lmap.get("midnight_open", 0)
+            bias = lmap.get("bias", "NEUTRAL")
+            bias_color = "#34d399" if "DISCOUNT" in bias else "#f87171"
+
+            ah_tag = "<span style='color:#f87171;'>⚡ SWEPT</span>" if lmap.get("asian_hi_swept") else "<span style='color:#38bdf8;'>🎯 UNTAKEN BSL</span>"
+            al_tag = "<span style='color:#f87171;'>⚡ SWEPT</span>" if lmap.get("asian_lo_swept") else "<span style='color:#38bdf8;'>🎯 UNTAKEN SSL</span>"
+            lh_tag = "<span style='color:#f87171;'>⚡ SWEPT</span>" if lmap.get("london_hi_swept") else "<span style='color:#38bdf8;'>🎯 UNTAKEN BSL</span>"
+            ll_tag = "<span style='color:#f87171;'>⚡ SWEPT</span>" if lmap.get("london_lo_swept") else "<span style='color:#38bdf8;'>🎯 UNTAKEN SSL</span>"
+
+            liquidity_html = f"""
+            <div style="background:#131822;border:1px solid #1e293b;border-radius:8px;padding:12px;margin:12px 0;font-size:12px;line-height:1.7;">
+              <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1f293d;padding-bottom:6px;margin-bottom:8px;">
+                <span style="font-weight:bold;color:#f0f3f6;font-size:13px;">🎯 NQZ2026 Session Liquidity Map</span>
+                <span style="font-family:monospace;font-weight:bold;color:{bias_color};">{bias}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                <div>• <b>NY Midnight Open:</b> <span style="font-family:monospace;color:#fbbf24;">${mo:,.2f}</span></div>
+                <div>• <b>Live Price:</b> <span style="font-family:monospace;color:#38bdf8;">${cur:,.2f}</span></div>
+                <div>• <b>Asian High:</b> <span style="font-family:monospace;">${lmap.get('asian_high', 0):,.2f}</span> ({ah_tag})</div>
+                <div>• <b>Asian Low:</b> <span style="font-family:monospace;">${lmap.get('asian_low', 0):,.2f}</span> ({al_tag})</div>
+                <div>• <b>London High:</b> <span style="font-family:monospace;">${lmap.get('london_high', 0):,.2f}</span> ({lh_tag})</div>
+                <div>• <b>London Low:</b> <span style="font-family:monospace;">${lmap.get('london_low', 0):,.2f}</span> ({ll_tag})</div>
+              </div>
+            </div>"""
+
 
         prices_html = "".join(
             f"<div style='background:#181f2e;padding:10px 14px;border-radius:6px;margin-bottom:6px;"
@@ -214,6 +245,7 @@ class CloudHealthServer(BaseHTTPRequestHandler):
   <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Active Session:</b> {LATEST_STATE["active_session"]}</p>
   <p style="margin:4px 0;font-size:13px;color:#94a3b8;"><b>Last Scan (India):</b> {LATEST_STATE["last_scan_ist"]}</p>
   <hr>
+  {liquidity_html}
   <h3 style="font-size:14px;color:#f0f3f6;margin:0 0 10px 0;">Active Trade Plans</h3>
   {signals_html}
   {funnel_html}
@@ -345,6 +377,11 @@ def scan_live(config: AppConfig, fetcher: MarketDataFetcher, detector: ICTSignal
             current_price = ltf[-1].close
             session = SessionDetector.get_active_session(ltf[-1].timestamp)
             LATEST_STATE["prices"][symbol] = current_price
+
+            if "NQ" in symbol.upper():
+                lmap = SessionDetector.get_session_liquidity_map(ltf)
+                if lmap:
+                    LATEST_STATE["liquidity_map"] = lmap
 
             logger.info(f"Auditing {symbol} | ${current_price:,.2f} | {session}")
 

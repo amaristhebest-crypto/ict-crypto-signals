@@ -1,373 +1,413 @@
 //@version=5
-strategy("Candace Lau ICT NQ Scalping Strategy [MFFU / CME Futures]", 
-         overlay=true, 
-         initial_capital=50000, 
-         default_qty_type=strategy.fixed, 
-         default_qty_value=2, 
-         commission_type=strategy.commission.cash_per_contract, 
-         commission_value=0.50, // $1.00 round-trip per contract on Tradovate/MFFU
-         max_boxes_count=500, 
-         max_lines_count=500, 
-         max_labels_count=500)
-
 // =============================================================================
-// INPUTS & CONFIGURATION
+//  CANDICE LAU / CHART FANATICS — COMPLETE NQ SCALPING SUITE [LEVELS + SIGNALS]
+//  Combines her full Institutional Level Map with an Assisted Execution Engine.
+//  
+//  Features:
+//    1. NY Midnight Open (00:00 ET) with Discount/Premium tracking
+//    2. RTH Opening Gap (16:00 -> 09:30 ET) with 25%, 50%, 75% Scale-out levels
+//    3. New Day (NDOG) & New Week (NWOG) Opening Gaps
+//    4. Asian (19:00-02:00) & London (02:00-05:00) High/Low with Sweep tracking
+//    5. Relative Equal Highs (EQH) and Equal Lows (EQL)
+//    6. Real-time SMT Divergence vs ES (CME_MINI:ES1!)
+//    7. Inversion Fair Value Gap (IFVG) Engine + 50% CE Midpoint
+//    8. Assisted Entry/Exit Signals: Entry at CE, Stop Loss, TP1 (RTH 50%), TP2 (2R+)
 // =============================================================================
-grp_sessions = "Institutional Sessions (New York Time UTC-4/UTC-5)"
-show_asian      = input.bool(true, "Show Asian Range (19:00 - 02:00 ET)", group=grp_sessions)
-show_london     = input.bool(true, "Show London Range (02:00 - 05:00 ET)", group=grp_sessions)
-show_midnight   = input.bool(true, "Show NY Midnight Open (00:00 ET)", group=grp_sessions)
-show_pdh_pdl    = input.bool(true, "Show Previous Day High / Low (PDH/PDL)", group=grp_sessions)
-show_killzones  = input.bool(true, "Highlight Execution Windows", group=grp_sessions)
+indicator("Candice Lau Complete ICT Suite [Levels + Signals]", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
-grp_fvg = "FVG & Inversion FVG (IFVG) Engine"
-show_fvg        = input.bool(true, "Detect Fair Value Gaps (FVG)", group=grp_fvg)
-show_ifvg       = input.bool(true, "Highlight Inversion Fair Value Gaps (IFVG)", group=grp_fvg)
-show_ce         = input.bool(true, "Show 50% Consequent Encroachment (CE)", group=grp_fvg)
-fvg_threshold   = input.float(0.0, "Minimum FVG Gap (Points, 0 = All)", group=grp_fvg)
+// ---------------------------------------------------------------- INPUTS ---
+gT = "Sessions & Timing (New York time)"
+i_asia    = input.bool(true,  "Asian range 19:00-02:00", group=gT)
+i_london  = input.bool(true,  "London range 02:00-05:00", group=gT)
+i_amzone  = input.bool(true,  "Highlight NY AM Execution (09:30-11:00 ET)", group=gT)
+i_mid     = input.bool(true,  "Midnight opening price 00:00", group=gT)
 
-grp_trade = "Execution & Risk Parameters"
-min_rr          = input.float(2.0, "Target Minimum R:R Ratio", step=0.5, group=grp_trade)
-max_risk_pts    = input.float(45.0, "Max Stop Loss Range (Points)", group=grp_trade)
-max_wait_bars   = input.int(12, "Max Limit Order Wait (Bars)", group=grp_trade)
-max_sweep_age   = input.int(36, "Max Sweep Recency (Bars)", group=grp_trade) // Ensures sweep happened recently
+gG = "Opening Gaps (Take Profit Magnets)"
+i_rth     = input.bool(true,  "RTH gap (16:00 -> 09:30) + 25/50/75% scale-outs", group=gG)
+i_ndog    = input.bool(true,  "New Day Opening Gap (17:00 -> 18:00)", group=gG)
+i_nwog    = input.bool(true,  "New Week Opening Gap (Sun open -> Fri close)", group=gG)
 
-// =============================================================================
-// COLOR PALETTE
-// =============================================================================
-c_midnight      = color.new(#f59e0b, 0) // Amber / Gold
-c_asian_box     = color.new(#6366f1, 88) // Indigo
-c_asian_line    = color.new(#818cf8, 20)
-c_london_box    = color.new(#06b6d4, 88) // Cyan
-c_london_line   = color.new(#22d3ee, 20)
+gP = "PD Arrays & Gaps"
+i_fvg     = input.bool(true,  "Fair Value Gaps (FVG)", group=gP)
+i_ifvg    = input.bool(true,  "Inversion FVGs (IFVG Confirmation)", group=gP)
+i_ce      = input.bool(true,  "Consequent Encroachment (50% CE)", group=gP)
+i_h1fvg   = input.bool(true,  "1-Hour FVG HTF Targets", group=gP)
+i_minfvg  = input.float(0.0,  "Min FVG size (points)", group=gP)
+i_maxfvg  = input.int(20,     "Max FVGs kept", minval=5, maxval=60, group=gP)
 
-c_bull_fvg      = color.new(#10b981, 80) // Emerald
-c_bear_fvg      = color.new(#ef4444, 80) // Red
-c_bull_ifvg     = color.new(#06b6d4, 75) // Cyan (Inverted to Bullish Support)
-c_bear_ifvg     = color.new(#d946ef, 75) // Magenta (Inverted to Bearish Resistance)
-c_ce            = color.new(#ffffff, 50)
+gL = "Liquidity"
+i_pdhl    = input.bool(true,  "Previous Day High / Low", group=gL)
+i_eq      = input.bool(true,  "Relative equal highs / lows", group=gL)
+i_eqtol   = input.float(2.0,  "Equal-level tolerance (points)", group=gL)
+i_sweep   = input.bool(true,  "Flag sweeps of session levels", group=gL)
 
-c_trap_zone     = color.new(#eab308, 92) // Yellow (Pre-market traps 08:30-09:30)
-c_trade_zone    = color.new(#10b981, 92) // Green (09:30 - 11:00 ET A+ Window)
+gS = "SMT Divergence"
+i_smt     = input.bool(true,  "SMT divergence vs ES", group=gS)
+i_smtsym  = input.string("CME_MINI:ES1!", "Correlated symbol", group=gS)
 
-// =============================================================================
-// TIME & SESSION TRACKING (New York Local Time)
-// =============================================================================
-t_asian     = not na(time(timeframe.period, "1900-0200:1234567", "America/New_York"))
-t_london    = not na(time(timeframe.period, "0200-0500:1234567", "America/New_York"))
-t_premarket = not na(time(timeframe.period, "0830-0930:1234567", "America/New_York"))
-t_ny_trade  = not na(time(timeframe.period, "0930-1100:1234567", "America/New_York"))
-t_midnight  = not na(time(timeframe.period, "0000-0005:1234567", "America/New_York"))
+gE = "Execution Assistant & Trade Signals"
+i_signals = input.bool(true,  "Show A+ Assisted Signals (Entry / SL / TP)", group=gE)
+i_min_rr  = input.float(2.0,  "Minimum Target R:R Ratio", step=0.5, group=gE)
+i_max_sl  = input.float(35.0, "Max Stop Loss (Points, default 35 = $140 risk on 2 MNQ)", group=gE)
+i_recency = input.int(30,     "Sweep recency window (bars)", group=gE)
 
-// Background Highlights
-bgcolor(show_killzones and t_premarket ? c_trap_zone : na, title="Pre-Market Trap Window (08:30-09:30 ET)")
-bgcolor(show_killzones and t_ny_trade ? c_trade_zone : na, title="Candace A+ NY Open Execution (09:30-11:00 ET)")
+// ---------------------------------------------------------------- COLOURS --
+c_mid   = #f59e0b
+c_rth   = #eab308
+c_ndog  = #a78bfa
+c_nwog  = #f472b6
+c_asia  = #6366f1
+c_lon   = #06b6d4
+c_bull  = #10b981
+c_bear  = #ef4444
+c_ifvg_b = #06b6d4 // Cyan
+c_ifvg_s = #d946ef // Magenta
 
-// =============================================================================
-// 1. NY MIDNIGHT OPEN (00:00 ET)
-// =============================================================================
-var float midnight_open = na
-var line line_midnight = na
+// ---------------------------------------------------------------- SESSIONS -
+t_asia   = not na(time(timeframe.period, "1900-0200:1234567", "America/New_York"))
+t_london = not na(time(timeframe.period, "0200-0500:1234567", "America/New_York"))
+t_pre    = not na(time(timeframe.period, "0830-0930:1234567", "America/New_York"))
+t_am     = not na(time(timeframe.period, "0930-1100:1234567", "America/New_York"))
+t_mid    = not na(time(timeframe.period, "0000-0001:1234567", "America/New_York"))
+t_930    = not na(time(timeframe.period, "0930-0931:1234567", "America/New_York"))
+t_1600   = not na(time(timeframe.period, "1600-1601:1234567", "America/New_York"))
+t_1700   = not na(time(timeframe.period, "1700-1701:1234567", "America/New_York"))
+t_1800   = not na(time(timeframe.period, "1800-1801:1234567", "America/New_York"))
 
-is_new_ny_day = ta.change(time("D", "0000-0005", "America/New_York"))
+bgcolor(i_amzone and t_am ? color.new(c_bull, 94) : (t_pre ? color.new(#eab308, 95) : na), title="Session Background")
 
-if is_new_ny_day or (t_midnight and not t_midnight[1])
-    midnight_open := open
-    if show_midnight
-        line_midnight := line.new(bar_index, midnight_open, bar_index + 10, midnight_open, color=c_midnight, width=2, style=line.style_dashed)
+newDay = ta.change(dayofmonth(time("D", "0000-0005", "America/New_York"))) != 0
 
-if not na(line_midnight)
-    line.set_x2(line_midnight, bar_index)
+// ------------------------------------------------- 1. MIDNIGHT OPENING PRICE
+var float midOpen = na
+if t_mid and not t_mid[1]
+    midOpen := open
+plot(i_mid and not na(midOpen) ? midOpen : na, "Midnight Open",
+     color=c_mid, linewidth=2, style=plot.style_linebr)
 
-plot(show_midnight ? midnight_open : na, "Midnight Open Tracker", color=c_midnight, style=plot.style_linebr, linewidth=1)
+// ------------------------------------------------------------- 2. RTH GAP --
+var float rthPrevClose = na
+var float rthOpen      = na
+var float rth50        = na
+var box   rthBox       = na
+var line  l25 = na, var line l50 = na, var line l75 = na
 
-// =============================================================================
-// 2. PREVIOUS DAY HIGH & LOW (PDH / PDL)
-// Documented no-repaint idiom: lookahead_on with [1] historical offset
-// =============================================================================
+if t_1600 and not t_1600[1]
+    rthPrevClose := close
+
+if t_930 and not t_930[1] and not na(rthPrevClose)
+    rthOpen := open
+    if i_rth and math.abs(rthOpen - rthPrevClose) > syminfo.mintick
+        float hi = math.max(rthOpen, rthPrevClose)
+        float lo = math.min(rthOpen, rthPrevClose)
+        rthBox := box.new(bar_index, hi, bar_index + 60, lo,
+             border_color=color.new(c_rth, 30), bgcolor=color.new(c_rth, 90),
+             border_style=line.style_dashed)
+        label.new(bar_index, hi, "RTH GAP (" + str.tostring(math.abs(rthOpen - rthPrevClose), "#.##") + " pts)",
+             color=color.new(c_rth, 20), textcolor=color.black,
+             size=size.tiny, style=label.style_label_down)
+        float d = rthPrevClose - rthOpen
+        rth50 := rthOpen + d * 0.50
+        l25 := line.new(bar_index, rthOpen + d * 0.25, bar_index + 60, rthOpen + d * 0.25, color=color.new(c_rth, 45), style=line.style_dotted)
+        l50 := line.new(bar_index, rth50, bar_index + 60, rth50, color=color.new(c_rth, 20), style=line.style_dashed, width=1)
+        l75 := line.new(bar_index, rthOpen + d * 0.75, bar_index + 60, rthOpen + d * 0.75, color=color.new(c_rth, 45), style=line.style_dotted)
+
+if not na(rthBox)
+    box.set_right(rthBox, bar_index + 5)
+    line.set_x2(l25, bar_index + 5)
+    line.set_x2(l50, bar_index + 5)
+    line.set_x2(l75, bar_index + 5)
+
+// --------------------------------------------- 3. NDOG / NWOG OPENING GAPS --
+var float pre1700 = na
+var box ndogBox = na, var box nwogBox = na
+
+if t_1700 and not t_1700[1]
+    pre1700 := close
+
+if t_1800 and not t_1800[1] and not na(pre1700)
+    bool isSunday = dayofweek(time, "America/New_York") == dayofweek.sunday
+    if math.abs(open - pre1700) > syminfo.mintick
+        float hi = math.max(open, pre1700)
+        float lo = math.min(open, pre1700)
+        if isSunday and i_nwog
+            nwogBox := box.new(bar_index, hi, bar_index + 200, lo, border_color=color.new(c_nwog, 20), bgcolor=color.new(c_nwog, 88))
+            label.new(bar_index, hi, "NWOG", color=color.new(c_nwog, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+        else if i_ndog
+            ndogBox := box.new(bar_index, hi, bar_index + 120, lo, border_color=color.new(c_ndog, 25), bgcolor=color.new(c_ndog, 90))
+            label.new(bar_index, hi, "NDOG", color=color.new(c_ndog, 25), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+if not na(ndogBox)
+    box.set_right(ndogBox, bar_index + 5)
+if not na(nwogBox)
+    box.set_right(nwogBox, bar_index + 5)
+
+// ----------------------------------------------------- 4. PREVIOUS DAY H/L --
 [pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+plot(i_pdhl ? pdh : na, "PDH", color=color.new(c_bear, 35), style=plot.style_linebr)
+plot(i_pdhl ? pdl : na, "PDL", color=color.new(c_bull, 35), style=plot.style_linebr)
 
-plot(show_pdh_pdl ? pdh : na, "PDH (Buy-Side Liquidity)", color=color.new(#f43f5e, 20), linewidth=1, style=plot.style_linebr)
-plot(show_pdh_pdl ? pdl : na, "PDL (Sell-Side Liquidity)", color=color.new(#10b981, 20), linewidth=1, style=plot.style_linebr)
+// ------------------------------------------------- 5. ASIA / LONDON RANGES --
+var float aH = na, var float aL = na
+var float lH = na, var float lL = na
+var box aBox = na, var box lBox = na
+var int aHswBar = 0, var int aLswBar = 0
+var int lHswBar = 0, var int lLswBar = 0
 
-// =============================================================================
-// 3. ASIAN & LONDON SESSION RANGE LIQUIDITY TRACKER
-// =============================================================================
-var float asian_h = na, var float asian_l = na
-var int asian_start = na
-var box box_asian = na
-var int asian_h_sweep_bar = 0
-var int asian_l_sweep_bar = 0
-
-if t_asian and not t_asian[1]
-    asian_h := high
-    asian_l := low
-    asian_start := bar_index
-    asian_h_sweep_bar := 0
-    asian_l_sweep_bar := 0
-    if show_asian
-        box_asian := box.new(asian_start, asian_h, bar_index, asian_l, border_color=c_asian_line, bgcolor=c_asian_box, border_style=line.style_solid)
-else if t_asian
-    asian_h := math.max(asian_h, high)
-    asian_l := math.min(asian_l, low)
-    if show_asian and not na(box_asian)
-        box.set_top(box_asian, asian_h)
-        box.set_bottom(box_asian, asian_l)
-        box.set_right(box_asian, bar_index)
-else if not t_asian and show_asian and not na(box_asian)
-    if bar_index - box.get_right(box_asian) < 300
-        box.set_right(box_asian, bar_index)
-
-// Track Asian Sweeps with recency timestamp
-if not na(asian_h) and asian_h_sweep_bar == 0 and high > asian_h and not t_asian
-    asian_h_sweep_bar := bar_index
-    if barstate.isconfirmed
-        label.new(bar_index, high, "⚡ Asian High Swept", color=color.new(#ef4444, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
-
-if not na(asian_l) and asian_l_sweep_bar == 0 and low < asian_l and not t_asian
-    asian_l_sweep_bar := bar_index
-    if barstate.isconfirmed
-        label.new(bar_index, low, "⚡ Asian Low Swept", color=color.new(#10b981, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-
-// London Session
-var float london_h = na, var float london_l = na
-var int london_start = na
-var box box_london = na
-var int london_h_sweep_bar = 0
-var int london_l_sweep_bar = 0
+if t_asia and not t_asia[1]
+    aH := high, aL := low, aHswBar := 0, aLswBar := 0
+    if i_asia
+        aBox := box.new(bar_index, aH, bar_index, aL, border_color=color.new(c_asia, 40), bgcolor=color.new(c_asia, 92))
+else if t_asia
+    aH := math.max(aH, high), aL := math.min(aL, low)
+    if i_asia and not na(aBox)
+        box.set_top(aBox, aH), box.set_bottom(aBox, aL), box.set_right(aBox, bar_index)
+else if i_asia and not na(aBox) and not newDay
+    box.set_right(aBox, bar_index)
 
 if t_london and not t_london[1]
-    london_h := high
-    london_l := low
-    london_start := bar_index
-    london_h_sweep_bar := 0
-    london_l_sweep_bar := 0
-    if show_london
-        box_london := box.new(london_start, london_h, bar_index, london_l, border_color=c_london_line, bgcolor=c_london_box, border_style=line.style_solid)
+    lH := high, lL := low, lHswBar := 0, lLswBar := 0
+    if i_london
+        lBox := box.new(bar_index, lH, bar_index, lL, border_color=color.new(c_lon, 40), bgcolor=color.new(c_lon, 92))
 else if t_london
-    london_h := math.max(london_h, high)
-    london_l := math.min(london_l, low)
-    if show_london and not na(box_london)
-        box.set_top(box_london, london_h)
-        box.set_bottom(box_london, london_l)
-        box.set_right(box_london, bar_index)
-else if not t_london and show_london and not na(box_london)
-    if bar_index - box.get_right(box_london) < 300
-        box.set_right(box_london, bar_index)
+    lH := math.max(lH, high), lL := math.min(lL, low)
+    if i_london and not na(lBox)
+        box.set_top(lBox, lH), box.set_bottom(lBox, lL), box.set_right(lBox, bar_index)
+else if i_london and not na(lBox) and not newDay
+    box.set_right(lBox, bar_index)
 
-// Track London Sweeps during NY
-if not na(london_h) and london_h_sweep_bar == 0 and high > london_h and not t_london
-    london_h_sweep_bar := bar_index
-    if barstate.isconfirmed
-        label.new(bar_index, high, "⚡ London High Swept", color=color.new(#ef4444, 15), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+// Sweep tracking with recency bar index
+if i_sweep and barstate.isconfirmed
+    if not na(aH) and aHswBar == 0 and not t_asia and high > aH
+        aHswBar := bar_index
+        label.new(bar_index, high, "Asia High swept", color=color.new(c_bear, 25), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+    if not na(aL) and aLswBar == 0 and not t_asia and low < aL
+        aLswBar := bar_index
+        label.new(bar_index, low, "Asia Low swept", color=color.new(c_bull, 25), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    if not na(lH) and lHswBar == 0 and not t_london and high > lH
+        lHswBar := bar_index
+        label.new(bar_index, high, "London High swept", color=color.new(c_bear, 15), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+    if not na(lL) and lLswBar == 0 and not t_london and low < lL
+        lLswBar := bar_index
+        label.new(bar_index, low, "London Low swept", color=color.new(c_bull, 15), textcolor=color.white, size=size.tiny, style=label.style_label_up)
 
-if not na(london_l) and london_l_sweep_bar == 0 and low < london_l and not t_london
-    london_l_sweep_bar := bar_index
-    if barstate.isconfirmed
-        label.new(bar_index, low, "⚡ London Low Swept", color=color.new(#10b981, 15), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+bool recent_low_sweep = (aLswBar > 0 and (bar_index - aLswBar) <= i_recency) or (lLswBar > 0 and (bar_index - lLswBar) <= i_recency)
+bool recent_high_sweep = (aHswBar > 0 and (bar_index - aHswBar) <= i_recency) or (lHswBar > 0 and (bar_index - lHswBar) <= i_recency)
 
-// Recency check: Has a sweep happened within the recency window?
-bool recent_low_sweep  = (asian_l_sweep_bar > 0 and (bar_index - asian_l_sweep_bar) <= max_sweep_age) or (london_l_sweep_bar > 0 and (bar_index - london_l_sweep_bar) <= max_sweep_age)
-bool recent_high_sweep = (asian_h_sweep_bar > 0 and (bar_index - asian_h_sweep_bar) <= max_sweep_age) or (london_h_sweep_bar > 0 and (bar_index - london_h_sweep_bar) <= max_sweep_age)
+// ------------------------------------------------------------- 6. FVGs & IFVG-
+var float[] fTop = array.new_float()
+var float[] fBot = array.new_float()
+var bool[]  fBull = array.new_bool()
+var box[]   fBox = array.new_box()
+var line[]  fCE  = array.new_line()
+var bool[]  fInv = array.new_bool()
 
-// =============================================================================
-// 4. FAIR VALUE GAPS (FVG) & INVERSION FAIR VALUE GAPS (IFVG)
-// =============================================================================
-type Fvg
-    box b_box
-    line l_ce
-    float top
-    float bottom
-    float ce
-    bool is_bullish
-    bool inverted
-    int start_bar
+bullGap = low > high[2] and (low - high[2]) >= i_minfvg
+bearGap = high < low[2] and (low[2] - high) >= i_minfvg
 
-var Fvg[] active_fvgs = array.new<Fvg>()
+if i_fvg and (bullGap or bearGap) and barstate.isconfirmed
+    float t = bullGap ? low : low[2]
+    float b = bullGap ? high[2] : high
+    color cc = bullGap ? c_bull : c_bear
+    box nb = box.new(bar_index - 2, t, bar_index + 12, b, border_color=color.new(cc, 55), bgcolor=color.new(cc, 85))
+    line nl = i_ce ? line.new(bar_index - 2, (t + b) / 2, bar_index + 12, (t + b) / 2, color=color.new(#ffffff, 55), style=line.style_dotted) : na
+    array.push(fTop, t), array.push(fBot, b), array.push(fBull, bullGap)
+    array.push(fBox, nb), array.push(fCE, nl), array.push(fInv, false)
 
-// Detect 3-bar Fair Value Gaps
-bullish_gap = (low > high[2]) and (low - high[2] >= fvg_threshold)
-bearish_gap = (high < low[2]) and (low[2] - high >= fvg_threshold)
-
-if show_fvg and (bullish_gap or bearish_gap)
-    float fvg_top = bullish_gap ? low : low[2]
-    float fvg_btm = bullish_gap ? high[2] : high
-    float fvg_mid = (fvg_top + fvg_btm) / 2.0
-    color bg_c    = bullish_gap ? c_bull_fvg : c_bear_fvg
-
-    box b = box.new(bar_index - 1, fvg_top, bar_index + 10, fvg_btm, border_color=color.new(bg_c, 30), bgcolor=bg_c)
-    line l = show_ce ? line.new(bar_index - 1, fvg_mid, bar_index + 10, fvg_mid, color=c_ce, style=line.style_dotted) : na
-
-    Fvg new_fvg = Fvg.new(b, l, fvg_top, fvg_btm, fvg_mid, bullish_gap, false, bar_index - 1)
-    array.push(active_fvgs, new_fvg)
-
-// FIXED (BUG 1): Fresh array each bar - NO 'var' so memory does NOT leak
-Fvg[] surviving_fvgs = array.new<Fvg>()
-
+// Track active IFVGs for execution signals
 float active_bull_ifvg_ce = na
+float active_bull_ifvg_bot = na
 float active_bear_ifvg_ce = na
-float active_bull_ifvg_bottom = na
 float active_bear_ifvg_top = na
 
-if array.size(active_fvgs) > 0
-    for i = 0 to array.size(active_fvgs) - 1
-        Fvg f = array.get(active_fvgs, i)
-        bool keep = true
+if array.size(fBox) > 0
+    for i = array.size(fBox) - 1 to 0
+        float t = array.get(fTop, i)
+        float b = array.get(fBot, i)
+        bool  u = array.get(fBull, i)
+        bool  inv = array.get(fInv, i)
 
-        if not f.inverted
-            // Check for INVERSION (Candace IFVG confirmation on bar close)
-            if not f.is_bullish and close > f.top // Bearish FVG inverted upward
-                if show_ifvg
-                    f.inverted := true
-                    box.set_bgcolor(f.b_box, c_bull_ifvg)
-                    box.set_border_color(f.b_box, color.new(#06b6d4, 20))
-                    active_bull_ifvg_ce := f.ce
-                    active_bull_ifvg_bottom := f.bottom
-                    if barstate.isconfirmed
-                        label.new(bar_index, f.top, "Bullish IFVG", color=color.new(#06b6d4, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+        if not inv and i_ifvg
+            // Check for INVERSION
+            if not u and close > t // Bearish FVG inverted upward to Bullish Support
+                array.set(fInv, i, true)
+                box.set_bgcolor(array.get(fBox, i), color.new(c_ifvg_b, 80))
+                box.set_border_color(array.get(fBox, i), color.new(c_ifvg_b, 30))
+                label.new(bar_index, t, "Bullish IFVG (Support)", color=color.new(c_ifvg_b, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+                active_bull_ifvg_ce := (t + b) / 2.0
+                active_bull_ifvg_bot := b
+            else if u and close < b // Bullish FVG inverted downward to Bearish Resistance
+                array.set(fInv, i, true)
+                box.set_bgcolor(array.get(fBox, i), color.new(c_ifvg_s, 80))
+                box.set_border_color(array.get(fBox, i), color.new(c_ifvg_s, 30))
+                label.new(bar_index, b, "Bearish IFVG (Resistance)", color=color.new(c_ifvg_s, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+                active_bear_ifvg_ce := (t + b) / 2.0
+                active_bear_ifvg_top := t
+
+        bool dead = false
+        if inv
+            dead := (not u and close < b) or (u and close > t)
+            if not dead
+                if not u
+                    active_bull_ifvg_ce := (t + b) / 2.0
+                    active_bull_ifvg_bot := b
                 else
-                    keep := false
-                    box.delete(f.b_box)
-                    if not na(f.l_ce)
-                        line.delete(f.l_ce)
-            else if f.is_bullish and close < f.bottom // Bullish FVG inverted downward
-                if show_ifvg
-                    f.inverted := true
-                    box.set_bgcolor(f.b_box, c_bear_ifvg)
-                    box.set_border_color(f.b_box, color.new(#d946ef, 20))
-                    active_bear_ifvg_ce := f.ce
-                    active_bear_ifvg_top := f.top
-                    if barstate.isconfirmed
-                        label.new(bar_index, f.bottom, "Bearish IFVG", color=color.new(#d946ef, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-                else
-                    keep := false
-                    box.delete(f.b_box)
-                    if not na(f.l_ce)
-                        line.delete(f.l_ce)
+                    active_bear_ifvg_ce := (t + b) / 2.0
+                    active_bear_ifvg_top := t
         else
-            // Inverted gap tracking
-            if f.is_bullish
-                active_bull_ifvg_ce := f.ce
-                active_bull_ifvg_bottom := f.bottom
-            else
-                active_bear_ifvg_ce := f.ce
-                active_bear_ifvg_top := f.top
+            dead := (u and close < b) or (not u and close > t)
 
-            if f.is_bullish and close > f.top
-                keep := false
-                box.delete(f.b_box)
-                if not na(f.l_ce)
-                    line.delete(f.l_ce)
-            else if not f.is_bullish and close < f.bottom
-                keep := false
-                box.delete(f.b_box)
-                if not na(f.l_ce)
-                    line.delete(f.l_ce)
+        if dead or (array.size(fBox) > i_maxfvg and i == 0)
+            box.delete(array.get(fBox, i))
+            line lc = array.get(fCE, i)
+            if not na(lc)
+                line.delete(lc)
+            array.remove(fTop, i), array.remove(fBot, i), array.remove(fBull, i)
+            array.remove(fBox, i), array.remove(fCE, i), array.remove(fInv, i)
+        else
+            box.set_right(array.get(fBox, i), bar_index + 3)
+            line lc2 = array.get(fCE, i)
+            if not na(lc2)
+                line.set_x2(lc2, bar_index + 3)
 
-        if keep
-            box.set_right(f.b_box, bar_index + 2)
-            if not na(f.l_ce)
-                line.set_x2(f.l_ce, bar_index + 2)
-            array.push(surviving_fvgs, f)
+// ------------------------------------------------------------ 7. 1H FVG ----
+[h1h2, h1l2] = request.security(syminfo.tickerid, "60", [high[2], low[2]])
+[h1h1, h1l1] = request.security(syminfo.tickerid, "60", [high[1], low[1]])
 
-    active_fvgs := surviving_fvgs
+var box h1Box = na
+newH1 = ta.change(time("60")) != 0
+if i_h1fvg and newH1 and not na(h1h2)
+    bool hb = h1l1 > h1h2
+    bool hs = h1h1 < h1l2
+    if hb or hs
+        float t = hb ? h1l1 : h1l2
+        float b = hb ? h1h2 : h1h1
+        color cc = hb ? c_bull : c_bear
+        h1Box := box.new(bar_index, t, bar_index + 90, b, border_color=color.new(cc, 15), bgcolor=color.new(cc, 90), border_style=line.style_dashed, border_width=2)
+        label.new(bar_index, t, hb ? "1H Bullish FVG (Target)" : "1H Bearish FVG (Target)", color=color.new(cc, 25), textcolor=color.white, size=size.tiny)
+if not na(h1Box)
+    box.set_right(h1Box, bar_index + 5)
 
-while array.size(active_fvgs) > 25
-    Fvg old_fvg = array.shift(active_fvgs)
-    box.delete(old_fvg.b_box)
-    if not na(old_fvg.l_ce)
-        line.delete(old_fvg.l_ce)
+// ------------------------------------------- 8. RELATIVE EQUAL HIGHS / LOWS-
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+var float lastPH = na, var int lastPHb = na
+var float lastPL = na, var int lastPLb = na
 
-// =============================================================================
-// 5. CANDACE A+ STRATEGY EXECUTION ENGINE (True Limit Orders at CE)
-// =============================================================================
-// FIXED (BUG 4): Check on bar close (isconfirmed) to avoid repainting
-bool in_ny_window = t_ny_trade
-bool is_discount  = not na(midnight_open) and close < midnight_open
-bool is_premium   = not na(midnight_open) and close > midnight_open
+if not na(ph)
+    if i_eq and not na(lastPH) and math.abs(ph - lastPH) <= i_eqtol
+        line.new(lastPHb, lastPH, bar_index - 3, ph, color=color.new(c_bear, 10), width=2, extend=extend.right, style=line.style_dotted)
+        label.new(bar_index - 3, ph, "EQH (Buy-side Liquidity Pool)", color=color.new(c_bear, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+    lastPH := ph, lastPHb := bar_index - 3
 
-// Setup Trigger: Recent liquidity sweep + Inversion FVG formed in NY window
-bool buy_signal_armed  = in_ny_window and recent_low_sweep and is_discount and not na(active_bull_ifvg_ce) and strategy.position_size == 0
-bool sell_signal_armed = in_ny_window and recent_high_sweep and is_premium and not na(active_bear_ifvg_ce) and strategy.position_size == 0
+if not na(pl)
+    if i_eq and not na(lastPL) and math.abs(pl - lastPL) <= i_eqtol
+        line.new(lastPLb, lastPL, bar_index - 3, pl, color=color.new(c_bull, 10), width=2, extend=extend.right, style=line.style_dotted)
+        label.new(bar_index - 3, pl, "EQL (Sell-side Liquidity Pool)", color=color.new(c_bull, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    lastPL := pl, lastPLb := bar_index - 3
 
-var int last_trade_bar = 0
-
-if buy_signal_armed and (bar_index - last_trade_bar > 15) and barstate.isconfirmed
-    float limit_entry = active_bull_ifvg_ce // FIXED (BUG 2): LIMIT entry at FVG CE midpoint!
-    // FIXED (BUG 3): Stop placed just below IFVG bottom or candle 1 low (NOT distant London range)
-    float stop_loss   = math.max(active_bull_ifvg_bottom - (syminfo.mintick * 8), limit_entry - max_risk_pts)
-    float risk_points = limit_entry - stop_loss
-
-    if risk_points > 0 and risk_points <= max_risk_pts
-        // Take profit targeted to external liquidity: London High or PDH (minimum min_rr R:R)
-        float target_liq = not na(london_h) and london_h > limit_entry ? london_h : pdh
-        float take_profit = math.max(limit_entry + (risk_points * min_rr), not na(target_liq) ? target_liq : limit_entry + (risk_points * min_rr))
-
-        strategy.entry("Long A+", strategy.long, limit=limit_entry)
-        strategy.exit("Exit Long", "Long A+", stop=stop_loss, limit=take_profit)
-        last_trade_bar := bar_index
-
-        label.new(bar_index, low - (syminfo.mintick * 15), 
-                  "⚡ Candace A+ BUY\nLimit @ CE: " + str.tostring(limit_entry, "#.##") + 
-                  "\nSL: " + str.tostring(stop_loss, "#.##") + 
-                  "\nTP: " + str.tostring(take_profit, "#.##") + 
-                  " (" + str.tostring((take_profit - limit_entry) / risk_points, "#.#") + "R)", 
-                  color=color.new(#10b981, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
-
-if sell_signal_armed and (bar_index - last_trade_bar > 15) and barstate.isconfirmed
-    float limit_entry = active_bear_ifvg_ce // FIXED (BUG 2): LIMIT entry at FVG CE midpoint!
-    // FIXED (BUG 3): Stop placed just above IFVG top or candle 1 high (NOT distant London range)
-    float stop_loss   = math.min(active_bear_ifvg_top + (syminfo.mintick * 8), limit_entry + max_risk_pts)
-    float risk_points = stop_loss - limit_entry
-
-    if risk_points > 0 and risk_points <= max_risk_pts
-        float target_liq = not na(london_l) and london_l < limit_entry ? london_l : pdl
-        float take_profit = math.min(limit_entry - (risk_points * min_rr), not na(target_liq) ? target_liq : limit_entry - (risk_points * min_rr))
-
-        strategy.entry("Short A+", strategy.short, limit=limit_entry)
-        strategy.exit("Exit Short", "Short A+", stop=stop_loss, limit=take_profit)
-        last_trade_bar := bar_index
-
-        label.new(bar_index, high + (syminfo.mintick * 15), 
-                  "⚡ Candace A+ SELL\nLimit @ CE: " + str.tostring(limit_entry, "#.##") + 
-                  "\nSL: " + str.tostring(stop_loss, "#.##") + 
-                  "\nTP: " + str.tostring(take_profit, "#.##") + 
-                  " (" + str.tostring((limit_entry - take_profit) / risk_points, "#.#") + "R)", 
-                  color=color.new(#ef4444, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
-
-// Cancel unfilled limit orders after max_wait_bars
-if strategy.position_size == 0 and bar_index - last_trade_bar > max_wait_bars
-    strategy.cancel("Long A+")
-    strategy.cancel("Short A+")
+// ------------------------------------------------------------- 9. SMT vs ES-
+es_l = request.security(i_smtsym, timeframe.period, low)
+es_h = request.security(i_smtsym, timeframe.period, high)
+var string smtTxt = "—"
+if i_smt and barstate.isconfirmed
+    bool nqLL = low < ta.lowest(low, 20)[1]
+    bool esLL = es_l < ta.lowest(es_l, 20)[1]
+    bool nqHH = high > ta.highest(high, 20)[1]
+    bool esHH = es_h > ta.highest(es_h, 20)[1]
+    if nqLL and not esLL
+        smtTxt := "BULLISH (NQ LL, ES held)"
+        label.new(bar_index, low, "SMT Bullish\n(NQ LL / ES held)", color=color.new(c_bull, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    else if nqHH and not esHH
+        smtTxt := "BEARISH (NQ HH, ES held)"
+        label.new(bar_index, high, "SMT Bearish\n(NQ HH / ES held)", color=color.new(c_bear, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
 
 // =============================================================================
-// 6. REAL-TIME HUD / INFORMATION DASHBOARD
+// 10. CANDICE A+ ASSISTED EXECUTION SIGNALS (WITH CLEAR ENTRY / SL / TP BOXES)
 // =============================================================================
-var table hud = table.new(position.top_right, 2, 8, bgcolor=color.new(#0b0e14, 10), border_color=color.new(#1e293b, 0), border_width=1)
+bool in_ny_am    = t_am
+bool is_discount = not na(midOpen) and close < midOpen
+bool is_premium  = not na(midOpen) and close > midOpen
+
+bool buy_trigger  = i_signals and in_ny_am and recent_low_sweep and is_discount and not na(active_bull_ifvg_ce) and barstate.isconfirmed
+bool sell_trigger = i_signals and in_ny_am and recent_high_sweep and is_premium and not na(active_bear_ifvg_ce) and barstate.isconfirmed
+
+var int last_sig_bar = 0
+
+if buy_trigger and (bar_index - last_sig_bar > 15)
+    last_sig_bar := bar_index
+    float entry_px = active_bull_ifvg_ce
+    float sl_px    = math.max(active_bull_ifvg_bot - (syminfo.mintick * 6), entry_px - i_max_sl)
+    float risk_pts = entry_px - sl_px
+
+    if risk_pts > 0 and risk_pts <= i_max_sl
+        float tp1_px = not na(rth50) and rth50 > entry_px ? rth50 : entry_px + (risk_pts * 1.5)
+        float tp2_px = not na(lH) and lH > entry_px ? lH : entry_px + (risk_pts * i_min_rr)
+        if tp2_px <= entry_px + (risk_pts * 1.5)
+            tp2_px := entry_px + (risk_pts * i_min_rr)
+
+        // Draw Execution Visual Box
+        line.new(bar_index, entry_px, bar_index + 15, entry_px, color=#38bdf8, width=2)
+        line.new(bar_index, sl_px, bar_index + 15, sl_px, color=#ef4444, width=2)
+        line.new(bar_index, tp2_px, bar_index + 15, tp2_px, color=#34d399, width=2)
+
+        string txt = "⚡ CANDACE A+ BUY (LONG)\n" +
+                     "--------------------\n" +
+                     "1. Entry (CE): $" + str.tostring(entry_px, "#.##") + "\n" +
+                     "2. Stop Loss: $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts / $" + str.tostring(risk_pts * 4, "#") + " risk on 2 MNQ)\n" +
+                     "3. TP 1 (Scale): $" + str.tostring(tp1_px, "#.##") + "\n" +
+                     "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (1:" + str.tostring((tp2_px - entry_px)/risk_pts, "#.#") + "R)"
+
+        label.new(bar_index, low - (syminfo.mintick * 12), txt, color=color.new(#064e3b, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+        alert("Candace A+ BUY Signal on NQ | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
+
+if sell_trigger and (bar_index - last_sig_bar > 15)
+    last_sig_bar := bar_index
+    float entry_px = active_bear_ifvg_ce
+    float sl_px    = math.min(active_bear_ifvg_top + (syminfo.mintick * 6), entry_px + i_max_sl)
+    float risk_pts = sl_px - entry_px
+
+    if risk_pts > 0 and risk_pts <= i_max_sl
+        float tp1_px = not na(rth50) and rth50 < entry_px ? rth50 : entry_px - (risk_pts * 1.5)
+        float tp2_px = not na(lL) and lL < entry_px ? lL : entry_px - (risk_pts * i_min_rr)
+        if tp2_px >= entry_px - (risk_pts * 1.5)
+            tp2_px := entry_px - (risk_pts * i_min_rr)
+
+        // Draw Execution Visual Box
+        line.new(bar_index, entry_px, bar_index + 15, entry_px, color=#38bdf8, width=2)
+        line.new(bar_index, sl_px, bar_index + 15, sl_px, color=#ef4444, width=2)
+        line.new(bar_index, tp2_px, bar_index + 15, tp2_px, color=#34d399, width=2)
+
+        string txt = "⚡ CANDACE A+ SELL (SHORT)\n" +
+                     "--------------------\n" +
+                     "1. Entry (CE): $" + str.tostring(entry_px, "#.##") + "\n" +
+                     "2. Stop Loss: $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts / $" + str.tostring(risk_pts * 4, "#") + " risk on 2 MNQ)\n" +
+                     "3. TP 1 (Scale): $" + str.tostring(tp1_px, "#.##") + "\n" +
+                     "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (1:" + str.tostring((entry_px - tp2_px)/risk_pts, "#.#") + "R)"
+
+        label.new(bar_index, high + (syminfo.mintick * 12), txt, color=color.new(#7f1d1d, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+        alert("Candace A+ SELL Signal on NQ | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
+
+// ------------------------------------------------------------- 11. HUD -----
+var table hud = table.new(position.top_right, 2, 10,
+     bgcolor=color.new(#0b0e14, 8), border_color=color.new(#1e293b, 0), border_width=1)
+
+f_cell(r, k, v, cv) =>
+    table.cell(hud, 0, r, k, text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, r, v, text_color=cv, text_size=size.small, text_halign=text.halign_right)
 
 if barstate.islast
-    table.cell(hud, 0, 0, "Institutional Benchmark", text_color=#f8fafc, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 0, "Price & Sweep Status", text_color=#f8fafc, text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 1, "NY Midnight Open (00:00 ET)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 1, str.tostring(midnight_open, "#.##"), text_color=#fbbf24, text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 2, "Dealing Bias (vs Midnight)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 2, (close < midnight_open ? "🟢 DISCOUNT (Bullish)" : "🔴 PREMIUM (Bearish)"), text_color=(close < midnight_open ? #34d399 : #f87171), text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 3, "Asian High (19:00 - 02:00)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 3, str.tostring(asian_h, "#.##") + (asian_h_sweep_bar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(asian_h_sweep_bar > 0 ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 4, "Asian Low", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 4, str.tostring(asian_l, "#.##") + (asian_l_sweep_bar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(asian_l_sweep_bar > 0 ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 5, "London High (02:00 - 05:00)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 5, str.tostring(london_h, "#.##") + (london_h_sweep_bar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(london_h_sweep_bar > 0 ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 6, "London Low", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    table.cell(hud, 1, 6, str.tostring(london_l, "#.##") + (london_l_sweep_bar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(london_l_sweep_bar > 0 ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
-
-    table.cell(hud, 0, 7, "Trading Window Status", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
-    string win_txt = t_ny_trade ? "🟢 NY OPEN (A+ Window)" : (t_premarket ? "⚠️ PRE-MARKET (Avoid Traps)" : "⚪ Outside Window")
-    color win_col = t_ny_trade ? #34d399 : (t_premarket ? #facc15 : #94a3b8)
-    table.cell(hud, 1, 7, win_txt, text_color=win_col, text_size=size.small, text_halign=text.halign_right)
+    table.cell(hud, 0, 0, "CANDACE SCALPING SUITE", text_color=#f8fafc, text_size=size.small)
+    table.cell(hud, 1, 0, syminfo.ticker, text_color=#38bdf8, text_size=size.small, text_halign=text.halign_right)
+    f_cell(1, "Midnight Open (00:00 ET)", na(midOpen) ? "—" : str.tostring(midOpen, "#.##"), #fbbf24)
+    f_cell(2, "Dealing Bias (vs Midnight)", na(midOpen) ? "—" : (close < midOpen ? "🟢 DISCOUNT (Bullish)" : "🔴 PREMIUM (Bearish)"), na(midOpen) ? #94a3b8 : (close < midOpen ? #34d399 : #f87171))
+    f_cell(3, "RTH Gap 50% TP", na(rth50) ? "—" : str.tostring(rth50, "#.##"), #eab308)
+    f_cell(4, "Asian High", na(aH) ? "—" : str.tostring(aH, "#.##") + (aHswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), aHswBar > 0 ? #f87171 : #818cf8)
+    f_cell(5, "Asian Low", na(aL) ? "—" : str.tostring(aL, "#.##") + (aLswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), aLswBar > 0 ? #f87171 : #818cf8)
+    f_cell(6, "London High", na(lH) ? "—" : str.tostring(lH, "#.##") + (lHswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), lHswBar > 0 ? #f87171 : #22d3ee)
+    f_cell(7, "London Low", na(lL) ? "—" : str.tostring(lL, "#.##") + (lLswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), lLswBar > 0 ? #f87171 : #22d3ee)
+    f_cell(8, "SMT vs ES", smtTxt, smtTxt == "—" ? #94a3b8 : #34d399)
+    string win_txt = t_am ? "🟢 NY OPEN (A+ Window)" : (t_pre ? "⚠️ PRE-MARKET (Avoid Traps)" : "⚪ Outside Window")
+    color win_col = t_am ? #34d399 : (t_pre ? #facc15 : #94a3b8)
+    f_cell(9, "Trading Window", win_txt, win_col)

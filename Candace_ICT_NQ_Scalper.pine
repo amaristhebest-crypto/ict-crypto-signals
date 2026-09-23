@@ -1,0 +1,333 @@
+//@version=5
+indicator("Candace Lau ICT NQ Scalping Blueprint [MFFU / CME Futures]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// =============================================================================
+// INPUTS & CONFIGURATION
+// =============================================================================
+grp_sessions = "Institutional Sessions (New York Time UTC-4/UTC-5)"
+show_asian      = input.bool(true, "Show Asian Range (19:00 - 02:00 ET)", group=grp_sessions)
+show_london     = input.bool(true, "Show London Range (02:00 - 05:00 ET)", group=grp_sessions)
+show_midnight   = input.bool(true, "Show NY Midnight Open (00:00 ET)", group=grp_sessions)
+show_pdh_pdl    = input.bool(true, "Show Previous Day High / Low (PDH/PDL)", group=grp_sessions)
+show_killzones  = input.bool(true, "Highlight NY Open Execution Zone (09:30-11:00 ET)", group=grp_sessions)
+
+grp_fvg = "FVG & Inversion FVG (IFVG) Engine"
+show_fvg        = input.bool(true, "Detect Fair Value Gaps (FVG)", group=grp_fvg)
+show_ifvg       = input.bool(true, "Highlight Inversion Fair Value Gaps (IFVG)", group=grp_fvg)
+show_ce         = input.bool(true, "Show 50% Consequent Encroachment (CE)", group=grp_fvg)
+fvg_threshold   = input.float(0.0, "Minimum FVG Gap (Points, 0 = All)", group=grp_fvg)
+
+grp_htf = "Higher Timeframe (HTF) 1-Hour Context"
+show_1h_fvg     = input.bool(true, "Show 1-Hour FVG Targets (Internal Liquidity)", group=grp_htf)
+
+grp_alerts = "A+ Execution Signals"
+show_signals    = input.bool(true, "Show A+ Execution Signal Labels", group=grp_alerts)
+min_rr          = input.float(2.0, "Target Minimum R:R Ratio", step=0.5, group=grp_alerts)
+
+// =============================================================================
+// COLOR PALETTE
+// =============================================================================
+c_midnight      = color.new(#f59e0b, 0) // Amber / Gold
+c_asian_box     = color.new(#6366f1, 88) // Indigo
+c_asian_line    = color.new(#818cf8, 20)
+c_london_box    = color.new(#06b6d4, 88) // Cyan
+c_london_line   = color.new(#22d3ee, 20)
+c_pdh_pdl       = color.new(#94a3b8, 30) // Slate
+
+c_bull_fvg      = color.new(#10b981, 80) // Emerald
+c_bear_fvg      = color.new(#ef4444, 80) // Red
+c_bull_ifvg     = color.new(#06b6d4, 75) // Cyan (Inverted to Bullish Support)
+c_bear_ifvg     = color.new(#d946ef, 75) // Magenta (Inverted to Bearish Resistance)
+c_ce            = color.new(#ffffff, 50)
+
+c_trap_zone     = color.new(#eab308, 92) // Yellow (Pre-market traps)
+c_trade_zone    = color.new(#10b981, 92) // Green (09:30 - 11:00 ET A+ Window)
+
+// =============================================================================
+// TIME & SESSION TRACKING (New York Local Time)
+// =============================================================================
+t_asian     = not na(time(timeframe.period, "1900-0200:1234567", "America/New_York"))
+t_london    = not na(time(timeframe.period, "0200-0500:1234567", "America/New_York"))
+t_premarket = not na(time(timeframe.period, "0830-0930:1234567", "America/New_York"))
+t_ny_trade  = not na(time(timeframe.period, "0930-1100:1234567", "America/New_York"))
+t_midnight  = not na(time(timeframe.period, "0000-0005:1234567", "America/New_York"))
+
+// Background Highlights
+bgcolor(show_killzones and t_premarket ? c_trap_zone : na, title="Pre-Market Trap Window (08:30-09:30 ET)")
+bgcolor(show_killzones and t_ny_trade ? c_trade_zone : na, title="Candace A+ NY Open Execution (09:30-11:00 ET)")
+
+// =============================================================================
+// 1. NY MIDNIGHT OPEN (00:00 ET)
+// =============================================================================
+var float midnight_open = na
+var line line_midnight = na
+var label lbl_midnight = na
+
+is_new_ny_day = ta.change(time("D", "0000-0005", "America/New_York"))
+
+if is_new_ny_day or (t_midnight and not t_midnight[1])
+    midnight_open := open
+    if show_midnight
+        line_midnight := line.new(bar_index, midnight_open, bar_index + 10, midnight_open, color=c_midnight, width=2, style=line.style_dashed)
+        lbl_midnight  := label.new(bar_index, midnight_open, "NY Midnight Open: " + str.tostring(midnight_open, "#.##"), color=color.new(c_midnight, 20), textcolor=color.black, size=size.small, style=label.style_label_down)
+
+if not na(line_midnight)
+    line.set_x2(line_midnight, bar_index)
+    label.set_x(lbl_midnight, bar_index)
+
+plot(show_midnight ? midnight_open : na, "Midnight Open Tracker", color=c_midnight, style=plot.style_linebr, linewidth=1)
+
+// =============================================================================
+// 2. PREVIOUS DAY HIGH & LOW (PDH / PDL)
+// =============================================================================
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+plot(show_pdh_pdl ? pdh : na, "PDH (Buy-Side Liquidity)", color=color.new(#f43f5e, 20), linewidth=1, style=plot.style_linebr)
+plot(show_pdh_pdl ? pdl : na, "PDL (Sell-Side Liquidity)", color=color.new(#10b981, 20), linewidth=1, style=plot.style_linebr)
+
+// =============================================================================
+// 3. ASIAN & LONDON SESSION RANGE LIQUIDITY TRACKER
+// =============================================================================
+var float asian_h = na, var float asian_l = na
+var int asian_start = na
+var box box_asian = na
+var bool asian_h_swept = false
+var bool asian_l_swept = false
+
+if t_asian and not t_asian[1]
+    asian_h := high
+    asian_l := low
+    asian_start := bar_index
+    asian_h_swept := false
+    asian_l_swept := false
+    if show_asian
+        box_asian := box.new(asian_start, asian_h, bar_index, asian_l, border_color=c_asian_line, bgcolor=c_asian_box, border_style=line.style_solid)
+else if t_asian
+    asian_h := math.max(asian_h, high)
+    asian_l := math.min(asian_l, low)
+    if show_asian and not na(box_asian)
+        box.set_top(box_asian, asian_h)
+        box.set_bottom(box_asian, asian_l)
+        box.set_right(box_asian, bar_index)
+else if not t_asian and show_asian and not na(box_asian)
+    // Extend right until swept or end of New York session
+    if bar_index - box.get_right(box_asian) < 300
+        box.set_right(box_asian, bar_index)
+
+// Track Asian Sweeps
+if not na(asian_h) and not asian_h_swept and high > asian_h and not t_asian
+    asian_h_swept := true
+    label.new(bar_index, high, "⚡ Asian High Swept\n(BSL Taken)", color=color.new(#ef4444, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+if not na(asian_l) and not asian_l_swept and low < asian_l and not t_asian
+    asian_l_swept := true
+    label.new(bar_index, low, "⚡ Asian Low Swept\n(SSL Taken)", color=color.new(#10b981, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+
+// London Session
+var float london_h = na, var float london_l = na
+var int london_start = na
+var box box_london = na
+var bool london_h_swept = false
+var bool london_l_swept = false
+
+if t_london and not t_london[1]
+    london_h := high
+    london_l := low
+    london_start := bar_index
+    london_h_swept := false
+    london_l_swept := false
+    if show_london
+        box_london := box.new(london_start, london_h, bar_index, london_l, border_color=c_london_line, bgcolor=c_london_box, border_style=line.style_solid)
+else if t_london
+    london_h := math.max(london_h, high)
+    london_l := math.min(london_l, low)
+    if show_london and not na(box_london)
+        box.set_top(box_london, london_h)
+        box.set_bottom(box_london, london_l)
+        box.set_right(box_london, bar_index)
+else if not t_london and show_london and not na(box_london)
+    if bar_index - box.get_right(box_london) < 300
+        box.set_right(box_london, bar_index)
+
+// Track London Sweeps during NY
+if not na(london_h) and not london_h_swept and high > london_h and not t_london
+    london_h_swept := true
+    label.new(bar_index, high, "⚡ London High Swept\n(BSL Taken)", color=color.new(#ef4444, 15), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+if not na(london_l) and not london_l_swept and low < london_l and not t_london
+    london_l_swept := true
+    label.new(bar_index, low, "⚡ London Low Swept\n(SSL Taken)", color=color.new(#10b981, 15), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+
+// =============================================================================
+// 4. FAIR VALUE GAPS (FVG) & INVERSION FAIR VALUE GAPS (IFVG)
+// =============================================================================
+type Fvg
+    box b_box
+    line l_ce
+    float top
+    float bottom
+    float ce
+    bool is_bullish
+    bool inverted
+    int start_bar
+
+var Fvg[] active_fvgs = array.new<Fvg>()
+
+// Detect 3-bar Fair Value Gaps
+bullish_gap = (low > high[2]) and (low - high[2] >= fvg_threshold)
+bearish_gap = (high < low[2]) and (low[2] - high >= fvg_threshold)
+
+if show_fvg and (bullish_gap or bearish_gap)
+    float fvg_top = bullish_gap ? low : low[2]
+    float fvg_btm = bullish_gap ? high[2] : high
+    float fvg_mid = (fvg_top + fvg_btm) / 2.0
+    color bg_c    = bullish_gap ? c_bull_fvg : c_bear_fvg
+
+    box b = box.new(bar_index - 1, fvg_top, bar_index + 10, fvg_btm, border_color=color.new(bg_c, 30), bgcolor=bg_c)
+    line l = show_ce ? line.new(bar_index - 1, fvg_mid, bar_index + 10, fvg_mid, color=c_ce, style=line.style_dotted) : na
+
+    Fvg new_fvg = Fvg.new(b, l, fvg_top, fvg_btm, fvg_mid, bullish_gap, false, bar_index - 1)
+    array.push(active_fvgs, new_fvg)
+
+// Manage Active FVGs and Inversion Transitions (IFVG)
+var Fvg[] surviving_fvgs = array.new<Fvg>()
+
+if array.size(active_fvgs) > 0
+    for i = 0 to array.size(active_fvgs) - 1
+        Fvg f = array.get(active_fvgs, i)
+        bool keep = true
+
+        if not f.inverted
+            // Check for INVERSION (Candace IFVG confirmation)
+            if not f.is_bullish and close > f.top // Bearish FVG inverted by strong Bullish body
+                if show_ifvg
+                    f.inverted := true
+                    box.set_bgcolor(f.b_box, c_bull_ifvg)
+                    box.set_border_color(f.b_box, color.new(#06b6d4, 20))
+                    label.new(bar_index, f.top, "Bullish IFVG (Support)", color=color.new(#06b6d4, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+                else
+                    keep := false
+                    box.delete(f.b_box)
+                    if not na(f.l_ce)
+                        line.delete(f.l_ce)
+            else if f.is_bullish and close < f.bottom // Bullish FVG inverted by strong Bearish body
+                if show_ifvg
+                    f.inverted := true
+                    box.set_bgcolor(f.b_box, c_bear_ifvg)
+                    box.set_border_color(f.b_box, color.new(#d946ef, 20))
+                    label.new(bar_index, f.bottom, "Bearish IFVG (Resistance)", color=color.new(#d946ef, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+                else
+                    keep := false
+                    box.delete(f.b_box)
+                    if not na(f.l_ce)
+                        line.delete(f.l_ce)
+        else
+            // Inverted gap invalidated if closed through again
+            if f.is_bullish and close > f.top
+                keep := false
+                box.delete(f.b_box)
+                if not na(f.l_ce)
+                    line.delete(f.l_ce)
+            else if not f.is_bullish and close < f.bottom
+                keep := false
+                box.delete(f.b_box)
+                if not na(f.l_ce)
+                    line.delete(f.l_ce)
+
+        if keep
+            box.set_right(f.b_box, bar_index + 2)
+            if not na(f.l_ce)
+                line.set_x2(f.l_ce, bar_index + 2)
+            array.push(surviving_fvgs, f)
+
+    active_fvgs := surviving_fvgs
+
+// Limit size to maintain speed
+while array.size(active_fvgs) > 30
+    Fvg old_fvg = array.shift(active_fvgs)
+    box.delete(old_fvg.b_box)
+    if not na(old_fvg.l_ce)
+        line.delete(old_fvg.l_ce)
+
+// =============================================================================
+// 5. 1-HOUR HIGHER TIMEFRAME (HTF) FVG (Candace Internal Liquidity Target)
+// =============================================================================
+[h1_o, h1_h, h1_l, h1_c] = request.security(syminfo.tickerid, "60", [open[1], high[1], low[1], close[1]])
+[h1_h2, h1_l2]           = request.security(syminfo.tickerid, "60", [high[2], low[2]])
+
+h1_bull_gap = h1_l > h1_h2
+h1_bear_gap = h1_h < h1_l2
+
+var box box_1h = na
+if show_1h_fvg and (h1_bull_gap or h1_bear_gap) and ta.change(time("60"))
+    float top_1h = h1_bull_gap ? h1_l : h1_l2
+    float btm_1h = h1_bull_gap ? h1_h2 : h1_h
+    color c_1h   = h1_bull_gap ? color.new(#10b981, 88) : color.new(#f43f5e, 88)
+    box_1h := box.new(bar_index, top_1h, bar_index + 30, btm_1h, border_color=color.new(c_1h, 10), bgcolor=c_1h, border_style=line.style_dashed)
+    label.new(bar_index, top_1h, h1_bull_gap ? "1H Bullish FVG Target" : "1H Bearish FVG Target", color=color.new(c_1h, 20), textcolor=color.white, size=size.tiny)
+
+// =============================================================================
+// 6. CANDACE A+ EXECUTION SIGNAL DETECTOR
+// =============================================================================
+// Bullish A+ Setup Requirements:
+// 1. Within NY Execution window (09:30 - 11:00 ET)
+// 2. Asian Low or London Low was swept (Liquidity Pool taken)
+// 3. Price is trading at a DISCOUNT (Below NY Midnight Open)
+// 4. Bullish IFVG or FVG confirmed with strong body close
+bool long_setup = show_signals and t_ny_trade and (asian_l_swept or london_l_swept) and (not na(midnight_open) and close < midnight_open) and (bullish_gap or (array.size(active_fvgs) > 0 and array.get(active_fvgs, array.size(active_fvgs)-1).inverted and not array.get(active_fvgs, array.size(active_fvgs)-1).is_bullish))
+
+// Bearish A+ Setup Requirements:
+// 1. Within NY Execution window (09:30 - 11:00 ET)
+// 2. Asian High or London High was swept
+// 3. Price is trading at a PREMIUM (Above NY Midnight Open)
+// 4. Bearish IFVG or FVG confirmed
+bool short_setup = show_signals and t_ny_trade and (asian_h_swept or london_h_swept) and (not na(midnight_open) and close > midnight_open) and (bearish_gap or (array.size(active_fvgs) > 0 and array.get(active_fvgs, array.size(active_fvgs)-1).inverted and array.get(active_fvgs, array.size(active_fvgs)-1).is_bullish))
+
+var int last_signal_bar = 0
+if (long_setup or short_setup) and bar_index - last_signal_bar > 15
+    last_signal_bar := bar_index
+    if long_setup
+        float sl = math.min(low, not na(london_l) ? london_l : low) - (syminfo.mintick * 10)
+        float risk = close - sl
+        float tp = close + (risk * min_rr)
+        label.new(bar_index, low - (syminfo.mintick * 20), "⚡ Candace A+ BUY (IFVG)\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(sl, "#.##") + "\nTP (1:" + str.tostring(min_rr, "#.#") + "): " + str.tostring(tp, "#.##"), color=color.new(#10b981, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+        alert("Candace A+ BUY Setup on " + syminfo.ticker + " | Entry: " + str.tostring(close) + " | SL: " + str.tostring(sl), alert.freq_once_per_bar_close)
+
+    if short_setup
+        float sl = math.max(high, not na(london_h) ? london_h : high) + (syminfo.mintick * 10)
+        float risk = sl - close
+        float tp = close - (risk * min_rr)
+        label.new(bar_index, high + (syminfo.mintick * 20), "⚡ Candace A+ SELL (IFVG)\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(sl, "#.##") + "\nTP (1:" + str.tostring(min_rr, "#.#") + "): " + str.tostring(tp, "#.##"), color=color.new(#ef4444, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+        alert("Candace A+ SELL Setup on " + syminfo.ticker + " | Entry: " + str.tostring(close) + " | SL: " + str.tostring(sl), alert.freq_once_per_bar_close)
+
+// =============================================================================
+// 7. REAL-TIME HUD / INFORMATION DASHBOARD
+// =============================================================================
+var table hud = table.new(position.top_right, 2, 8, bgcolor=color.new(#0b0e14, 10), border_color=color.new(#1e293b, 0), border_width=1)
+
+if barstate.islast
+    table.cell(hud, 0, 0, "Institutional Benchmark", text_color=#f8fafc, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 0, "Price & Sweep Status", text_color=#f8fafc, text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 1, "NY Midnight Open (00:00 ET)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 1, str.tostring(midnight_open, "#.##"), text_color=#fbbf24, text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 2, "Dealing Bias (vs Midnight)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 2, (close < midnight_open ? "🟢 DISCOUNT (Bullish)" : "🔴 PREMIUM (Bearish)"), text_color=(close < midnight_open ? #34d399 : #f87171), text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 3, "Asian High (19:00 - 02:00)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 3, str.tostring(asian_h, "#.##") + (asian_h_swept ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(asian_h_swept ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 4, "Asian Low", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 4, str.tostring(asian_l, "#.##") + (asian_l_swept ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(asian_l_swept ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 5, "London High (02:00 - 05:00)", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 5, str.tostring(london_h, "#.##") + (london_h_swept ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(london_h_swept ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 6, "London Low", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, 6, str.tostring(london_l, "#.##") + (london_l_swept ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), text_color=(london_l_swept ? #f87171 : #38bdf8), text_size=size.small, text_halign=text.halign_right)
+
+    table.cell(hud, 0, 7, "Trading Window Status", text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    string win_txt = t_ny_trade ? "🟢 NY OPEN (A+ Window)" : (t_premarket ? "⚠️ PRE-MARKET (Avoid Traps)" : "⚪ Outside Window")
+    color win_col = t_ny_trade ? #34d399 : (t_premarket ? #facc15 : #94a3b8)
+    table.cell(hud, 1, 7, win_txt, text_color=win_col, text_size=size.small, text_halign=text.halign_right)

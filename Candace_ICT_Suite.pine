@@ -1,0 +1,861 @@
+//@version=5
+// =============================================================================
+//  CANDICE ICT SUITE — LEVELS + TRADE ASSISTANT   (NQ1! / MNQ1!, 1-minute)
+//  Chart settings: extended trading hours ON (Asia/London need the overnight).
+//
+//  Built from her 26 Aug NY AM trade (Chart Fanatics transcript). Each rule
+//  cites what she said. Where she used judgment, the choice is an input.
+//
+//  HER TRADE, IN HER WORDS
+//    1. "the huge bearish candle that's starting from 8:30, we sweep the
+//        sell-side"  (relative equal lows)
+//    2. "liquidity sweep, also displacement" -> bullish FVG after the sweep
+//    3. "inside the new week opening gap and also a one-hour FVG",
+//       "bullish SMT with ES"
+//    4. Entry ~9:28 ET. "Stop loss putting at swing low ... 20 point"
+//    5. "TP putting at swing high ... 1 to 2.3" -> take partial
+//    6. "move my stop loss to break even", "tracking my stop loss to the
+//        swing low"
+//    7. TP2 "just right below the RTH gap open" (1 to 4.5)
+//
+//  HOW TO USE IT
+//    BUY/SELL PLAN label  -> place the limit, stop and TP exactly as shown
+//    FILLED               -> you are in
+//    TP1 HIT              -> close half, do what the label says with the stop
+//    trail stop           -> move your stop to the new level
+//    TP2 / STOP / 12:00   -> close everything
+//    CANCELLED            -> delete the unfilled limit
+//
+//  NOT A VALIDATED EDGE
+//    The mechanical version of this model tested t = 1.67 against a 4.50
+//    noise bar on NQ, 0 of 15 configurations positive out of sample. The
+//    HUD tallies what these plans did on your chart's history. Read it, but
+//    a few weeks of 1-minute data is a small sample, not a backtest.
+//
+//  FIXES vs the previous file
+//    1. IFVG no longer deleted on the bar it inverts (stale local `inv`)
+//    2. Her own trade qualifies: 08:30-11:00 window, recency in MINUTES,
+//       equal-low sweeps count
+//    3. Stop wider than max -> trade SKIPPED, never moved inside structure
+//    4. Minimum R:R actually enforced (TP1 and TP2)
+//    5. RTH gap levels reset daily — no stale target from yesterday
+//    6. 1H FVG compares candles [1] and [3] (was adjacent candles — my bug)
+//    7. NDOG/NWOG read close[1] at the 18:00 reopen. CME has no 17:00 bar,
+//       so the old 17:00 capture never fired (my bug)
+//    8. Midnight-open filter OPTIONAL, default off: her 26 Aug long had
+//       "midnight opening price below" — she bought ABOVE midnight
+//    9. Sizing from $ risk, not a fixed 2 contracts
+//   10. NWOG zone now resets every Sunday 18:00 — a no-gap week no longer
+//       inherits last week's zone for the A+/A/B/C confluence grade
+//   11. NDOG/NWOG boxes stop extending on no-gap days (no infinite boxes)
+//   12. TP1 partial rounds to the nearest contract (3 micros -> close 2,
+//       not floor(3/2)=1 which left a 67% runner)
+// =============================================================================
+indicator("Candice ICT Suite — Levels + Trade Assistant", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+TZ = "America/New_York"
+
+// ------------------------------------------------------------------ INPUTS
+gT = "Sessions (New York time)"
+i_asia   = input.bool(true, "Asian range 19:00-02:00", group=gT)
+i_london = input.bool(true, "London range 02:00-05:00", group=gT)
+i_amzone = input.bool(true, "Shade the entry window", group=gT)
+i_mid    = input.bool(true, "Midnight opening price", group=gT)
+
+gG = "Opening gaps"
+i_rth  = input.bool(true, "RTH gap + 25 / 50 / 75%", group=gG)
+i_ndog = input.bool(true, "New Day Opening Gap", group=gG)
+i_nwog = input.bool(true, "New Week Opening Gap", group=gG)
+
+gP = "PD arrays"
+i_fvg    = input.bool(true, "Draw FVGs", group=gP)
+i_ifvg   = input.bool(true, "Track inversion FVGs (IFVG)", group=gP)
+i_ce     = input.bool(true, "Draw 50% CE line", group=gP)
+i_h1fvg  = input.bool(true, "1-hour FVG", group=gP)
+i_minfvg = input.float(0.0, "Min FVG size (points)", minval=0, group=gP)
+i_maxfvg = input.int(20, "Max FVGs kept", minval=5, maxval=60, group=gP)
+
+gL = "Liquidity"
+i_pdhl  = input.bool(true, "Previous day high / low", group=gL)
+i_eq    = input.bool(true, "Relative equal highs / lows", group=gL)
+i_eqtol = input.float(2.0, "Equal-level tolerance (points)", minval=0, group=gL)
+i_sweep = input.bool(true, "Label sweeps", group=gL)
+
+gS = "SMT"
+i_smt    = input.bool(true, "SMT vs correlated index", group=gS)
+i_smtsym = input.symbol("CME_MINI:ES1!", "Correlated symbol", group=gS)
+
+gE = "Trade assistant — her process"
+i_sig     = input.bool(true, "Show trade plans + management", group=gE)
+i_win     = input.session("0830-1100", "Entry window (ET) — her entry was 9:28", group=gE)
+i_recMin  = input.int(90, "Sweep must be within (minutes) — hers ~58", minval=5, group=gE)
+i_useEQ   = input.bool(true, "Equal-high/low sweeps trigger (her 26 Aug)", group=gE)
+i_disp    = input.float(1.3, "Displacement: FVG middle body >= x avg (0=off)", minval=0, step=0.1, group=gE)
+i_useIF   = input.bool(true, "Allow IFVG entries", group=gE)
+i_midF    = input.bool(false, "Require long BELOW / short ABOVE midnight", group=gE, tooltip="Off by default. Her 26 Aug long was taken with the midnight open below price.")
+i_bias    = input.bool(false, "Require previous day's candle to agree", group=gE)
+i_needSMT = input.bool(false, "Require SMT", group=gE)
+i_maxSL   = input.float(35.0, "Max stop (points) — wider = SKIP", minval=1, group=gE)
+i_minSL   = input.float(5.0, "Min stop (points) — tighter = SKIP", minval=0, group=gE)
+i_bufT    = input.int(4, "Stop buffer beyond swing (ticks)", minval=0, group=gE)
+i_padT    = input.int(4, "Exit this many ticks before a target", minval=0, group=gE)
+i_minR1   = input.float(1.0, "Min R to TP1", minval=0, step=0.25, group=gE)
+i_minR2   = input.float(2.0, "Min R to TP2", minval=0.5, step=0.25, group=gE)
+i_be      = input.bool(true, "After TP1: stop to breakeven (Candice)", group=gE, tooltip="The ICT notes (L1178) say keep the initial stop. Candice moved hers to breakeven.")
+i_trail   = input.bool(true, "After TP1: trail stop to new swings (Candice)", group=gE)
+i_expMin  = input.int(30, "Cancel unfilled limit after (minutes)", minval=1, group=gE)
+i_maxDay  = input.int(2, "Max trades per day", minval=1, group=gE)
+i_lunch   = input.bool(true, "Flat by 12:00 ET", group=gE)
+
+gR = "Sizing"
+i_risk = input.float(250.0, "Risk per trade ($)", minval=1, group=gR)
+i_pv   = input.float(2.0, "$ per point per contract (MNQ 2, NQ 20)", minval=0.01, group=gR)
+i_fee  = input.float(1.0, "Commission, round trip per contract ($)", minval=0, group=gR)
+
+// ----------------------------------------------------------------- CONSTANTS
+c_mid  = #f59e0b
+c_rth  = #eab308
+c_ndog = #a78bfa
+c_nwog = #f472b6
+c_asia = #6366f1
+c_lon  = #06b6d4
+c_bull = #10b981
+c_bear = #ef4444
+c_ifb  = #06b6d4
+c_ifs  = #d946ef
+
+tick    = syminfo.mintick
+bufPx   = i_bufT * tick
+padPx   = i_padT * tick
+tfSec   = timeframe.in_seconds(timeframe.period)
+recBars = math.max(1, math.round(i_recMin * 60.0 / tfSec))
+expBars = math.max(1, math.round(i_expMin * 60.0 / tfSec))
+
+inS(s) => not na(time(timeframe.period, s + ":1234567", TZ))
+f_fmt(x) => str.tostring(x, "#.##")
+f_r(x) => str.tostring(x, "#.#")
+
+// ------------------------------------------------------------------ SESSIONS
+t_asia   = inS("1900-0200")
+t_london = inS("0200-0500")
+t_entry  = inS(i_win)
+t_mid    = inS("0000-0001")
+t_930    = inS("0930-0931")
+t_1600   = inS("1600-1601")
+t_1800   = inS("1800-1801")
+t_lunch  = inS("1200-1300")
+
+bgcolor(i_amzone and t_entry ? color.new(c_bull, 94) : na, title="Entry window")
+
+nyDom    = dayofmonth(time, TZ)
+newNYDay = nyDom != nyDom[1]
+
+// ------------------------------------------------- 1. MIDNIGHT OPENING PRICE
+// "for this orange line, this is the midnight opening price"
+var float midOpen = na
+if t_mid and not t_mid[1]
+    midOpen := open
+plot(i_mid ? midOpen : na, "Midnight open", color=c_mid, linewidth=2, style=plot.style_linebr)
+
+// --------------------------------------------------------------- 2. RTH GAP
+// "this will be the 25%, 50%, 75%, and 100% of the gap"
+var float rthPrev = na
+var float rth50   = na
+var box   rthBox  = na
+var line  l25     = na
+var line  l50     = na
+var line  l75     = na
+
+if t_1600 and not t_1600[1]
+    rthPrev := close[1]
+
+if t_930 and not t_930[1]
+    rth50  := na
+    rthBox := na
+    l25    := na
+    l50    := na
+    l75    := na
+    if not na(rthPrev) and math.abs(open - rthPrev) > tick
+        float g = rthPrev - open
+        rth50 := open + g * 0.5
+        if i_rth
+            rthBox := box.new(bar_index, math.max(open, rthPrev), bar_index + 60, math.min(open, rthPrev), border_color=color.new(c_rth, 30), bgcolor=color.new(c_rth, 90), border_style=line.style_dashed)
+            label.new(bar_index, math.max(open, rthPrev), "RTH GAP " + f_r(math.abs(g)) + " pts", color=color.new(c_rth, 20), textcolor=color.black, size=size.tiny, style=label.style_label_down)
+            l25 := line.new(bar_index, open + g * 0.25, bar_index + 60, open + g * 0.25, color=color.new(c_rth, 45), style=line.style_dotted)
+            l50 := line.new(bar_index, open + g * 0.50, bar_index + 60, open + g * 0.50, color=color.new(c_rth, 20), style=line.style_dashed)
+            l75 := line.new(bar_index, open + g * 0.75, bar_index + 60, open + g * 0.75, color=color.new(c_rth, 45), style=line.style_dotted)
+
+if not na(rthBox)
+    box.set_right(rthBox, bar_index + 5)
+if not na(l25)
+    line.set_x2(l25, bar_index + 5)
+if not na(l50)
+    line.set_x2(l50, bar_index + 5)
+if not na(l75)
+    line.set_x2(l75, bar_index + 5)
+
+// ------------------------------------------------------ 3. NDOG / NWOG GAPS
+// "the new day opening gap is also here"
+// CME has no bars 17:00-18:00, so the pre-break close is close[1] at 18:00.
+var box   ndogBox = na
+var box   nwogBox = na
+var float nwTop   = na
+var float nwBot   = na
+
+if t_1800 and not t_1800[1]
+    float pc = close[1]
+    bool isSunday = dayofweek(time, TZ) == dayofweek.sunday
+    // FIX 10: reset the week zone EVERY Sunday so a no-gap week cannot
+    // inherit last week's NWOG in the confluence grade
+    if isSunday
+        nwTop   := na
+        nwBot   := na
+        nwogBox := na
+    else
+        // FIX 11: a no-gap day must not keep extending yesterday's box
+        ndogBox := na
+    if math.abs(open - pc) > tick
+        float gh = math.max(open, pc)
+        float gl = math.min(open, pc)
+        if isSunday
+            nwTop := gh
+            nwBot := gl
+            if i_nwog
+                nwogBox := box.new(bar_index, gh, bar_index + 200, gl, border_color=color.new(c_nwog, 20), bgcolor=color.new(c_nwog, 88))
+                label.new(bar_index, gh, "NWOG", color=color.new(c_nwog, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+        else if i_ndog
+            ndogBox := box.new(bar_index, gh, bar_index + 120, gl, border_color=color.new(c_ndog, 25), bgcolor=color.new(c_ndog, 90))
+            label.new(bar_index, gh, "NDOG", color=color.new(c_ndog, 25), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+if not na(ndogBox)
+    box.set_right(ndogBox, bar_index + 5)
+if not na(nwogBox)
+    box.set_right(nwogBox, bar_index + 5)
+
+// --------------------------------------------------------- 4. PREVIOUS DAY
+// lookahead_on together with [1] is the no-repaint idiom for prior-day values
+[pdh, pdl, pdo, pdc] = request.security(syminfo.tickerid, "D", [high[1], low[1], open[1], close[1]], lookahead=barmerge.lookahead_on)
+plot(i_pdhl ? pdh : na, "PDH", color=color.new(c_bear, 35), style=plot.style_linebr)
+plot(i_pdhl ? pdl : na, "PDL", color=color.new(c_bull, 35), style=plot.style_linebr)
+
+var float dHi = na
+var float dLo = na
+if newNYDay or na(dHi)
+    dHi := high
+    dLo := low
+else
+    dHi := math.max(dHi, high)
+    dLo := math.min(dLo, low)
+
+// ------------------------------------------------ 5. ASIA / LONDON RANGES
+// "we got a large range Asia session and a consolidation for London session"
+var float aH   = na
+var float aL   = na
+var float lH   = na
+var float lL   = na
+var box   aBox = na
+var box   lBox = na
+var int   aHsw = 0
+var int   aLsw = 0
+var int   lHsw = 0
+var int   lLsw = 0
+
+if t_asia and not t_asia[1]
+    aH   := high
+    aL   := low
+    aHsw := 0
+    aLsw := 0
+    aBox := i_asia ? box.new(bar_index, high, bar_index, low, border_color=color.new(c_asia, 40), bgcolor=color.new(c_asia, 92)) : na
+else if t_asia
+    aH := math.max(aH, high)
+    aL := math.min(aL, low)
+    if not na(aBox)
+        box.set_top(aBox, aH)
+        box.set_bottom(aBox, aL)
+        box.set_right(aBox, bar_index)
+else if not na(aBox)
+    box.set_right(aBox, bar_index)
+
+if t_london and not t_london[1]
+    lH   := high
+    lL   := low
+    lHsw := 0
+    lLsw := 0
+    lBox := i_london ? box.new(bar_index, high, bar_index, low, border_color=color.new(c_lon, 40), bgcolor=color.new(c_lon, 92)) : na
+else if t_london
+    lH := math.max(lH, high)
+    lL := math.min(lL, low)
+    if not na(lBox)
+        box.set_top(lBox, lH)
+        box.set_bottom(lBox, lL)
+        box.set_right(lBox, bar_index)
+else if not na(lBox)
+    box.set_right(lBox, bar_index)
+
+// ------------------------------------------- 6. RELATIVE EQUAL HIGHS / LOWS
+// "relative equal high on the buy-side liquidity, and also relative equal
+//  low here, this wick and this wick, for sell-side liquidity"
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+
+var float lastPH  = na
+var int   lastPHb = na
+var float lastPL  = na
+var int   lastPLb = na
+var float eqhLvl  = na
+var bool  eqhSw   = true
+var float eqlLvl  = na
+var bool  eqlSw   = true
+
+if not na(ph)
+    if not na(lastPH) and math.abs(ph - lastPH) <= i_eqtol
+        eqhLvl := math.max(ph, lastPH)
+        eqhSw  := false
+        if i_eq
+            line.new(lastPHb, lastPH, bar_index - 3, ph, color=color.new(c_bear, 10), width=2, style=line.style_dotted)
+            label.new(bar_index - 3, eqhLvl, "EQH buy-side", color=color.new(c_bear, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+    lastPH  := ph
+    lastPHb := bar_index - 3
+
+if not na(pl)
+    if not na(lastPL) and math.abs(pl - lastPL) <= i_eqtol
+        eqlLvl := math.min(pl, lastPL)
+        eqlSw  := false
+        if i_eq
+            line.new(lastPLb, lastPL, bar_index - 3, pl, color=color.new(c_bull, 10), width=2, style=line.style_dotted)
+            label.new(bar_index - 3, eqlLvl, "EQL sell-side", color=color.new(c_bull, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    lastPL  := pl
+    lastPLb := bar_index - 3
+
+// --------------------------------------------------------------- 7. SMT
+// "bullish SMT with ES"
+es_l = request.security(i_smtsym, timeframe.period, low)
+es_h = request.security(i_smtsym, timeframe.period, high)
+nqLL = low < ta.lowest(low, 20)[1]
+esLL = es_l < ta.lowest(es_l, 20)[1]
+nqHH = high > ta.highest(high, 20)[1]
+esHH = es_h > ta.highest(es_h, 20)[1]
+smtBullNow = i_smt and nqLL and not esLL
+smtBearNow = i_smt and nqHH and not esHH
+
+// ------------------------------------------------------------- 8. FVG / IFVG
+avgBody = ta.sma(math.abs(close - open), 20)
+dispOK  = i_disp <= 0 or math.abs(close[1] - open[1]) >= i_disp * nz(avgBody[2])
+
+var float[] fTop  = array.new_float()
+var float[] fBot  = array.new_float()
+var bool[]  fBull = array.new_bool()
+var bool[]  fInv  = array.new_bool()
+var box[]   fBox  = array.new_box()
+var line[]  fCE   = array.new_line()
+
+bullGap = low > high[2] and (low - high[2]) >= i_minfvg
+bearGap = high < low[2] and (low[2] - high) >= i_minfvg
+
+if barstate.isconfirmed and (bullGap or bearGap)
+    float nt = bullGap ? low : low[2]
+    float nb = bullGap ? high[2] : high
+    color nc = bullGap ? c_bull : c_bear
+    box  nbx = i_fvg ? box.new(bar_index - 2, nt, bar_index + 12, nb, border_color=color.new(nc, 55), bgcolor=color.new(nc, 85)) : na
+    line nln = i_fvg and i_ce ? line.new(bar_index - 2, (nt + nb) / 2, bar_index + 12, (nt + nb) / 2, color=color.new(#ffffff, 55), style=line.style_dotted) : na
+    array.push(fTop, nt)
+    array.push(fBot, nb)
+    array.push(fBull, bullGap)
+    array.push(fInv, false)
+    array.push(fBox, nbx)
+    array.push(fCE, nln)
+
+bool  evBI   = false
+float evBIce = na
+bool  evSI   = false
+float evSIce = na
+
+if barstate.isconfirmed and array.size(fTop) > 0
+    for i = array.size(fTop) - 1 to 0 by -1
+        float t  = array.get(fTop, i)
+        float b  = array.get(fBot, i)
+        bool  u  = array.get(fBull, i)
+        bool  iv = array.get(fInv, i)
+        box   bx = array.get(fBox, i)
+        if i_ifvg and not iv
+            if not u and close > t
+                array.set(fInv, i, true)
+                iv := true
+                if not na(bx)
+                    box.set_bgcolor(bx, color.new(c_ifb, 80))
+                    box.set_border_color(bx, color.new(c_ifb, 30))
+                    label.new(bar_index, t, "Bullish IFVG", color=color.new(c_ifb, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+                if not evBI
+                    evBI   := true
+                    evBIce := (t + b) / 2
+            else if u and close < b
+                array.set(fInv, i, true)
+                iv := true
+                if not na(bx)
+                    box.set_bgcolor(bx, color.new(c_ifs, 80))
+                    box.set_border_color(bx, color.new(c_ifs, 30))
+                    label.new(bar_index, b, "Bearish IFVG", color=color.new(c_ifs, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+                if not evSI
+                    evSI   := true
+                    evSIce := (t + b) / 2
+        // FIX 1: `iv` is re-read after inversion, so a fresh IFVG survives
+        bool dead = iv ? ((not u and close < b) or (u and close > t)) : ((u and close < b) or (not u and close > t))
+        if dead or (i == 0 and array.size(fTop) > i_maxfvg)
+            if not na(bx)
+                box.delete(bx)
+            line lc = array.get(fCE, i)
+            if not na(lc)
+                line.delete(lc)
+            array.remove(fTop, i)
+            array.remove(fBot, i)
+            array.remove(fBull, i)
+            array.remove(fInv, i)
+            array.remove(fBox, i)
+            array.remove(fCE, i)
+        else
+            if not na(bx)
+                box.set_right(bx, bar_index + 3)
+            line lc2 = array.get(fCE, i)
+            if not na(lc2)
+                line.set_x2(lc2, bar_index + 3)
+
+// -------------------------------------------------------------- 9. 1H FVG
+// "about to hit a one-hour FVG" — FIX 6: candle 3 is [1], candle 1 is [3]
+[h1h1, h1l1, h1h3, h1l3] = request.security(syminfo.tickerid, "60", [high[1], low[1], high[3], low[3]], lookahead=barmerge.lookahead_on)
+newH1 = ta.change(time("60")) != 0
+
+var box   h1Box  = na
+var float h1Top  = na
+var float h1Bot  = na
+var bool  h1Bull = false
+
+if newH1 and not na(h1h3)
+    bool hb = h1l1 > h1h3
+    bool hs = h1h1 < h1l3
+    if hb or hs
+        h1Top  := hb ? h1l1 : h1l3
+        h1Bot  := hb ? h1h3 : h1h1
+        h1Bull := hb
+        if i_h1fvg
+            color hc = hb ? c_bull : c_bear
+            h1Box := box.new(bar_index, h1Top, bar_index + 90, h1Bot, border_color=color.new(hc, 15), bgcolor=color.new(hc, 90), border_style=line.style_dashed, border_width=2)
+            label.new(bar_index, h1Top, hb ? "1H bullish FVG" : "1H bearish FVG", color=color.new(hc, 25), textcolor=color.white, size=size.tiny)
+if not na(h1Box)
+    box.set_right(h1Box, bar_index + 5)
+
+// =============================================================================
+// 10. TRADE ASSISTANT — state machine
+//     0 flat  ->  1 limit placed  ->  2 filled  ->  3 half closed  ->  0
+// =============================================================================
+var int    sslBar = na
+var int    sslLoB = na
+var float  sslLo  = na
+var float  sslHi  = na
+var string sslNm  = ""
+var int    bslBar = na
+var int    bslHiB = na
+var float  bslHi  = na
+var float  bslLo  = na
+var string bslNm  = ""
+var int    smtBB  = na
+var int    smtSB  = na
+
+var int   tState = 0
+var bool  tLong  = true
+var float tEntry = na
+var float tStop  = na
+var float tRisk  = na
+var float tTP1   = na
+var float tTP2   = na
+var float tR1    = na
+var int   tBar   = na
+var int   tQty   = 0
+var line  lnE    = na
+var line  lnS    = na
+var line  lnT1   = na
+var line  lnT2   = na
+var int   lastX  = na
+
+var int   dayN = 0
+var int   dayL = 0
+var float dayR = 0.0
+var int   stN  = 0
+var int   stW  = 0
+var float stR  = 0.0
+
+if barstate.isconfirmed
+    if newNYDay
+        dayN := 0
+        dayL := 0
+        dayR := 0.0
+
+    // ---------------------------------------------------------- sweeps
+    string sEv = ""
+    string bEv = ""
+    if not na(aL) and aLsw == 0 and not t_asia and low < aL
+        aLsw := bar_index
+        sEv  := "Asia low"
+    if not na(lL) and lLsw == 0 and not t_london and low < lL
+        lLsw := bar_index
+        sEv  := "London low"
+    if not eqlSw and not na(eqlLvl) and low < eqlLvl
+        eqlSw := true
+        if i_useEQ
+            sEv := "Equal lows"
+    if not na(aH) and aHsw == 0 and not t_asia and high > aH
+        aHsw := bar_index
+        bEv  := "Asia high"
+    if not na(lH) and lHsw == 0 and not t_london and high > lH
+        lHsw := bar_index
+        bEv  := "London high"
+    if not eqhSw and not na(eqhLvl) and high > eqhLvl
+        eqhSw := true
+        if i_useEQ
+            bEv := "Equal highs"
+
+    if i_sweep and sEv != ""
+        label.new(bar_index, low, sEv + " swept (sell-side)", color=color.new(c_bull, 25), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    if i_sweep and bEv != ""
+        label.new(bar_index, high, bEv + " swept (buy-side)", color=color.new(c_bear, 25), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+    // sell-side sweep -> track the swing low (stop) and the high after it (TP1)
+    if sEv != ""
+        sslBar := bar_index
+        sslNm  := sEv
+        sslLo  := low
+        sslLoB := bar_index
+        sslHi  := close > open ? high : close
+    else if not na(sslBar)
+        if low < sslLo
+            sslLo  := low
+            sslLoB := bar_index
+            sslHi  := close > open ? high : close
+        else
+            sslHi := math.max(sslHi, high)
+
+    if bEv != ""
+        bslBar := bar_index
+        bslNm  := bEv
+        bslHi  := high
+        bslHiB := bar_index
+        bslLo  := close < open ? low : close
+    else if not na(bslBar)
+        if high > bslHi
+            bslHi  := high
+            bslHiB := bar_index
+            bslLo  := close < open ? low : close
+        else
+            bslLo := math.min(bslLo, low)
+
+    if smtBullNow
+        smtBB := bar_index
+        label.new(bar_index, low, "SMT bull", color=color.new(c_bull, 40), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    if smtBearNow
+        smtSB := bar_index
+        label.new(bar_index, high, "SMT bear", color=color.new(c_bear, 40), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+    // ------------------------------------------------ manage open plan
+    float  dirS   = tLong ? 1.0 : -1.0
+    bool   doExit = false
+    float  exPx   = na
+    string exWhy  = ""
+    bool   doCan  = false
+    string canWhy = ""
+
+    if tState == 1 and bar_index > tBar
+        bool fill   = tLong ? low <= tEntry : high >= tEntry
+        bool ranTP1 = tLong ? high >= tTP1 : low <= tTP1
+        if ranTP1 and not fill
+            doCan  := true
+            canWhy := "Ran to TP1 without filling.\nDon't chase it."
+        else if fill
+            tState := 2
+            dayN   += 1
+            label.new(bar_index, tEntry, "FILLED " + (tLong ? "BUY " : "SELL ") + str.tostring(tQty) + " micros @ " + f_fmt(tEntry), color=color.new(#0ea5e9, 15), textcolor=color.white, size=size.small, style=tLong ? label.style_label_up : label.style_label_down)
+            bool stopNow = tLong ? low <= tStop : high >= tStop
+            if stopNow
+                doExit := true
+                exPx   := tStop
+                exWhy  := "STOPPED on the fill bar"
+        else if bar_index - tBar >= expBars
+            doCan  := true
+            canWhy := "Not filled in " + str.tostring(i_expMin) + " min.\nDelete the limit."
+        else if i_lunch and t_lunch
+            doCan  := true
+            canWhy := "12:00 ET.\nDelete the unfilled limit."
+    else if tState == 2
+        bool stHit = tLong ? low <= tStop : high >= tStop
+        bool t1Hit = tLong ? high >= tTP1 : low <= tTP1
+        if stHit
+            doExit := true
+            exPx   := tStop
+            exWhy  := "STOP hit. Done for this setup."
+        else if t1Hit
+            tState := 3
+            tR1    := (tTP1 - tEntry) * dirS / tRisk
+            if i_be
+                tStop := tEntry
+                line.set_y1(lnS, tStop)
+                line.set_y2(lnS, tStop)
+            string nxt = i_be ? "Move stop to BREAKEVEN " + f_fmt(tEntry) : "Keep the original stop (ICT L1178)"
+            string t1t = "TP1 HIT  +" + f_r(tR1) + "R"
+            // FIX 12: round to nearest so an odd size still closes ~half
+            t1t := t1t + "\nClose " + str.tostring(math.round(tQty / 2.0)) + " of " + str.tostring(tQty) + " micros"
+            t1t := t1t + "\n" + nxt
+            label.new(bar_index, tTP1, t1t, color=color.new(c_rth, 10), textcolor=color.black, size=size.small, style=tLong ? label.style_label_down : label.style_label_up)
+            bool t2Now = tLong ? high >= tTP2 : low <= tTP2
+            if t2Now
+                doExit := true
+                exPx   := tTP2
+                exWhy  := "TP2 hit on the same bar"
+        else if i_lunch and t_lunch
+            doExit := true
+            exPx   := close
+            exWhy  := "12:00 ET. Close the position."
+    else if tState == 3
+        bool st3 = tLong ? low <= tStop : high >= tStop
+        bool t2H = tLong ? high >= tTP2 : low <= tTP2
+        if st3
+            doExit := true
+            exPx   := tStop
+            exWhy  := tStop == tEntry ? "Runner stopped at breakeven" : "Runner stopped on trailed stop"
+        else if t2H
+            doExit := true
+            exPx   := tTP2
+            exWhy  := "TP2. Close the rest."
+        else if i_lunch and t_lunch
+            doExit := true
+            exPx   := close
+            exWhy  := "12:00 ET. Close the runner."
+        else if i_trail
+            // "keep on tracking my stop loss to the swing low"
+            if tLong and not na(pl) and pl - bufPx > tStop and pl < close
+                tStop := pl - bufPx
+                line.set_y1(lnS, tStop)
+                line.set_y2(lnS, tStop)
+                label.new(bar_index, tStop, "Trail stop to " + f_fmt(tStop), color=color.new(#64748b, 25), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+            else if (not tLong) and not na(ph) and ph + bufPx < tStop and ph > close
+                tStop := ph + bufPx
+                line.set_y1(lnS, tStop)
+                line.set_y2(lnS, tStop)
+                label.new(bar_index, tStop, "Trail stop to " + f_fmt(tStop), color=color.new(#64748b, 25), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+
+    if doExit
+        bool  half = tState == 3
+        float rr   = half ? 0.5 * tR1 + 0.5 * (exPx - tEntry) * dirS / tRisk : (exPx - tEntry) * dirS / tRisk
+        float net  = rr - i_fee / (tRisk * i_pv)
+        stN  += 1
+        stR  += net
+        stW  += net > 0 ? 1 : 0
+        dayR += net
+        dayL += net < 0 ? 1 : 0
+        string ext = exWhy + "\nResult " + (net >= 0 ? "+" : "") + f_r(net) + "R  ($" + str.tostring(net * tRisk * i_pv * tQty, "#") + ")"
+        label.new(bar_index, exPx, ext, color=net >= 0 ? color.new(c_bull, 10) : color.new(c_bear, 10), textcolor=color.white, size=size.small, style=tLong ? label.style_label_down : label.style_label_up)
+        line.set_x2(lnE, bar_index)
+        line.set_x2(lnS, bar_index)
+        line.set_x2(lnT1, bar_index)
+        line.set_x2(lnT2, bar_index)
+        alert("NQ: " + exWhy + " | " + f_r(net) + "R", alert.freq_once_per_bar_close)
+        tState := 0
+        lastX  := bar_index
+
+    if doCan
+        label.new(bar_index, tEntry, "CANCELLED\n" + canWhy, color=color.new(#64748b, 20), textcolor=color.white, size=size.small, style=label.style_label_left)
+        line.set_x2(lnE, bar_index)
+        line.set_x2(lnS, bar_index)
+        line.set_x2(lnT1, bar_index)
+        line.set_x2(lnT2, bar_index)
+        tState := 0
+        lastX  := bar_index
+
+    if tState >= 1
+        line.set_x2(lnE, bar_index + 3)
+        line.set_x2(lnS, bar_index + 3)
+        line.set_x2(lnT1, bar_index + 3)
+        line.set_x2(lnT2, bar_index + 3)
+
+    // -------------------------------------------------- new plans
+    bool canPlan = i_sig and tState == 0 and t_entry and dayN < i_maxDay and dayL < 2 and (na(lastX) or bar_index - lastX > 3)
+
+    // ---------------- LONG: sell-side swept -> displacement -> bullish FVG
+    bool sRecent = not na(sslBar) and bar_index - sslBar <= recBars
+    bool lFVG    = bullGap and dispOK and not na(sslLoB) and bar_index - 2 >= sslLoB
+    bool lIF     = i_useIF and evBI and not na(sslLoB) and bar_index > sslLoB
+    bool lMid    = not i_midF or (not na(midOpen) and close < midOpen)
+    bool lBias   = not i_bias or pdc > pdo
+    bool lSMT    = not na(smtBB) and bar_index - smtBB <= recBars
+    bool lSMTok  = not i_needSMT or lSMT
+
+    if canPlan and sRecent and (lFVG or lIF) and lMid and lBias and lSMTok
+        float e  = lFVG ? (low + high[2]) / 2.0 : evBIce
+        float s  = sslLo - bufPx
+        float rk = e - s
+        float t1 = sslHi - padPx
+        // TP2: nearest untaken liquidity above TP1 ("low hanging fruit")
+        float  t2r = na
+        string t2n = ""
+        if not na(rthPrev) and rthPrev > t1 and (na(t2r) or rthPrev < t2r)
+            t2r := rthPrev
+            t2n := "RTH gap"
+        if not eqhSw and not na(eqhLvl) and eqhLvl > t1 and (na(t2r) or eqhLvl < t2r)
+            t2r := eqhLvl
+            t2n := "equal highs"
+        if lHsw == 0 and not na(lH) and lH > t1 and (na(t2r) or lH < t2r)
+            t2r := lH
+            t2n := "London high"
+        if aHsw == 0 and not na(aH) and aH > t1 and (na(t2r) or aH < t2r)
+            t2r := aH
+            t2n := "Asia high"
+        if not na(pdh) and dHi < pdh and pdh > t1 and (na(t2r) or pdh < t2r)
+            t2r := pdh
+            t2n := "PDH"
+        float t2 = na(t2r) ? e + i_minR2 * rk : t2r - padPx
+        if na(t2r)
+            t2n := "no liquidity above: fixed " + f_r(i_minR2) + "R"
+        int   q  = rk > 0 ? math.floor(i_risk / (rk * i_pv)) : 0
+        float r1 = rk > 0 ? (t1 - e) / rk : 0.0
+        float r2 = rk > 0 ? (t2 - e) / rk : 0.0
+        // FIX 3 + 4: skip, never shrink the stop; both R gates enforced
+        if rk >= i_minSL and rk <= i_maxSL and t1 > e and t2 > t1 and r1 >= i_minR1 and r2 >= i_minR2 and q >= 2
+            tState := 1
+            tLong  := true
+            tEntry := e
+            tStop  := s
+            tRisk  := rk
+            tTP1   := t1
+            tTP2   := t2
+            tBar   := bar_index
+            tQty   := q
+            lnE  := line.new(bar_index, e, bar_index + 3, e, color=#38bdf8, width=2)
+            lnS  := line.new(bar_index, s, bar_index + 3, s, color=c_bear, width=2)
+            lnT1 := line.new(bar_index, t1, bar_index + 3, t1, color=c_rth, width=1, style=line.style_dashed)
+            lnT2 := line.new(bar_index, t2, bar_index + 3, t2, color=c_bull, width=2)
+            bool   inNW = not na(nwTop) and e <= nwTop and e >= nwBot
+            bool   in1H = h1Bull and not na(h1Top) and e <= h1Top and e >= h1Bot
+            int    nC   = (lSMT ? 1 : 0) + (inNW ? 1 : 0) + (in1H ? 1 : 0)
+            string gr   = nC == 3 ? "A+" : nC == 2 ? "A" : nC == 1 ? "B" : "C"
+            string tx = "BUY PLAN   grade " + gr
+            tx := tx + "\nLIMIT  " + f_fmt(e)
+            tx := tx + "\nSTOP   " + f_fmt(s) + "   (" + f_r(rk) + " pts)"
+            tx := tx + "\nTP1    " + f_fmt(t1) + "   " + f_r(r1) + "R  close half"
+            tx := tx + "\nTP2    " + f_fmt(t2) + "   " + f_r(r2) + "R  " + t2n
+            tx := tx + "\nSIZE   " + str.tostring(q) + " micros = $" + str.tostring(q * rk * i_pv, "#") + " risk"
+            tx := tx + "\n----------"
+            tx := tx + "\n+ " + sslNm + " swept"
+            tx := tx + "\n+ " + (lFVG ? "displacement + bullish FVG" : "bullish IFVG")
+            tx := tx + (lSMT ? "\n+ SMT vs ES" : "\n- no SMT")
+            tx := tx + (inNW ? "\n+ inside NWOG" : "\n- not in NWOG")
+            tx := tx + (in1H ? "\n+ inside 1H FVG" : "\n- not in 1H FVG")
+            tx := tx + (na(midOpen) ? "" : "\n. price " + (close > midOpen ? "above" : "below") + " midnight open")
+            tx := tx + "\n----------\nIf price hits TP1 before filling,\ncancel. Don't chase."
+            label.new(bar_index, low, tx, color=color.new(#052e1f, 5), textcolor=color.white, style=label.style_label_up, size=size.normal, textalign=text.align_left)
+            alert("NQ BUY PLAN " + gr + " | limit " + f_fmt(e) + " | stop " + f_fmt(s) + " | TP1 " + f_fmt(t1) + " | TP2 " + f_fmt(t2) + " | " + str.tostring(q) + " micros", alert.freq_once_per_bar_close)
+
+    // ---------------- SHORT: buy-side swept -> displacement -> bearish FVG
+    bool bRecent = not na(bslBar) and bar_index - bslBar <= recBars
+    bool sFVG    = bearGap and dispOK and not na(bslHiB) and bar_index - 2 >= bslHiB
+    bool sIF     = i_useIF and evSI and not na(bslHiB) and bar_index > bslHiB
+    bool sMid    = not i_midF or (not na(midOpen) and close > midOpen)
+    bool sBias   = not i_bias or pdc < pdo
+    bool sSMT    = not na(smtSB) and bar_index - smtSB <= recBars
+    bool sSMTok  = not i_needSMT or sSMT
+
+    if canPlan and tState == 0 and bRecent and (sFVG or sIF) and sMid and sBias and sSMTok
+        float e  = sFVG ? (high + low[2]) / 2.0 : evSIce
+        float s  = bslHi + bufPx
+        float rk = s - e
+        float t1 = bslLo + padPx
+        float  t2r = na
+        string t2n = ""
+        if not na(rthPrev) and rthPrev < t1 and (na(t2r) or rthPrev > t2r)
+            t2r := rthPrev
+            t2n := "RTH gap"
+        if not eqlSw and not na(eqlLvl) and eqlLvl < t1 and (na(t2r) or eqlLvl > t2r)
+            t2r := eqlLvl
+            t2n := "equal lows"
+        if lLsw == 0 and not na(lL) and lL < t1 and (na(t2r) or lL > t2r)
+            t2r := lL
+            t2n := "London low"
+        if aLsw == 0 and not na(aL) and aL < t1 and (na(t2r) or aL > t2r)
+            t2r := aL
+            t2n := "Asia low"
+        if not na(pdl) and dLo > pdl and pdl < t1 and (na(t2r) or pdl > t2r)
+            t2r := pdl
+            t2n := "PDL"
+        float t2 = na(t2r) ? e - i_minR2 * rk : t2r + padPx
+        if na(t2r)
+            t2n := "no liquidity below: fixed " + f_r(i_minR2) + "R"
+        int   q  = rk > 0 ? math.floor(i_risk / (rk * i_pv)) : 0
+        float r1 = rk > 0 ? (e - t1) / rk : 0.0
+        float r2 = rk > 0 ? (e - t2) / rk : 0.0
+        if rk >= i_minSL and rk <= i_maxSL and t1 < e and t2 < t1 and r1 >= i_minR1 and r2 >= i_minR2 and q >= 2
+            tState := 1
+            tLong  := false
+            tEntry := e
+            tStop  := s
+            tRisk  := rk
+            tTP1   := t1
+            tTP2   := t2
+            tBar   := bar_index
+            tQty   := q
+            lnE  := line.new(bar_index, e, bar_index + 3, e, color=#38bdf8, width=2)
+            lnS  := line.new(bar_index, s, bar_index + 3, s, color=c_bear, width=2)
+            lnT1 := line.new(bar_index, t1, bar_index + 3, t1, color=c_rth, width=1, style=line.style_dashed)
+            lnT2 := line.new(bar_index, t2, bar_index + 3, t2, color=c_bull, width=2)
+            bool   inNW = not na(nwTop) and e <= nwTop and e >= nwBot
+            bool   in1H = (not h1Bull) and not na(h1Top) and e <= h1Top and e >= h1Bot
+            int    nC   = (sSMT ? 1 : 0) + (inNW ? 1 : 0) + (in1H ? 1 : 0)
+            string gr   = nC == 3 ? "A+" : nC == 2 ? "A" : nC == 1 ? "B" : "C"
+            string tx = "SELL PLAN   grade " + gr
+            tx := tx + "\nLIMIT  " + f_fmt(e)
+            tx := tx + "\nSTOP   " + f_fmt(s) + "   (" + f_r(rk) + " pts)"
+            tx := tx + "\nTP1    " + f_fmt(t1) + "   " + f_r(r1) + "R  close half"
+            tx := tx + "\nTP2    " + f_fmt(t2) + "   " + f_r(r2) + "R  " + t2n
+            tx := tx + "\nSIZE   " + str.tostring(q) + " micros = $" + str.tostring(q * rk * i_pv, "#") + " risk"
+            tx := tx + "\n----------"
+            tx := tx + "\n+ " + bslNm + " swept"
+            tx := tx + "\n+ " + (sFVG ? "displacement + bearish FVG" : "bearish IFVG")
+            tx := tx + (sSMT ? "\n+ SMT vs ES" : "\n- no SMT")
+            tx := tx + (inNW ? "\n+ inside NWOG" : "\n- not in NWOG")
+            tx := tx + (in1H ? "\n+ inside 1H FVG" : "\n- not in 1H FVG")
+            tx := tx + (na(midOpen) ? "" : "\n. price " + (close > midOpen ? "above" : "below") + " midnight open")
+            tx := tx + "\n----------\nIf price hits TP1 before filling,\ncancel. Don't chase."
+            label.new(bar_index, high, tx, color=color.new(#3b0a0a, 5), textcolor=color.white, style=label.style_label_down, size=size.normal, textalign=text.align_left)
+            alert("NQ SELL PLAN " + gr + " | limit " + f_fmt(e) + " | stop " + f_fmt(s) + " | TP1 " + f_fmt(t1) + " | TP2 " + f_fmt(t2) + " | " + str.tostring(q) + " micros", alert.freq_once_per_bar_close)
+
+// -------------------------------------------------------------- 11. HUD
+var table hud = table.new(position.top_right, 2, 14, bgcolor=color.new(#0b0e14, 8), border_color=color.new(#1e293b, 0), border_width=1)
+
+f_cell(r, k, v, cv) =>
+    table.cell(hud, 0, r, k, text_color=#cbd5e1, text_size=size.small, text_halign=text.halign_left)
+    table.cell(hud, 1, r, v, text_color=cv, text_size=size.small, text_halign=text.halign_right)
+
+if barstate.islast
+    table.cell(hud, 0, 0, "CANDICE ICT SUITE", text_color=#f8fafc, text_size=size.small)
+    table.cell(hud, 1, 0, syminfo.ticker, text_color=#38bdf8, text_size=size.small, text_halign=text.halign_right)
+    f_cell(1, "Midnight open", na(midOpen) ? "-" : f_fmt(midOpen), #fbbf24)
+    f_cell(2, "Price vs midnight", na(midOpen) ? "-" : (close > midOpen ? "ABOVE" : "BELOW"), #cbd5e1)
+    f_cell(3, "RTH gap edge (prev close)", na(rthPrev) ? "-" : f_fmt(rthPrev), #eab308)
+    f_cell(4, "Asia high", na(aH) ? "-" : f_fmt(aH) + (aHsw > 0 ? "  swept" : "  open"), aHsw > 0 ? #f87171 : #818cf8)
+    f_cell(5, "Asia low", na(aL) ? "-" : f_fmt(aL) + (aLsw > 0 ? "  swept" : "  open"), aLsw > 0 ? #f87171 : #818cf8)
+    f_cell(6, "London high", na(lH) ? "-" : f_fmt(lH) + (lHsw > 0 ? "  swept" : "  open"), lHsw > 0 ? #f87171 : #22d3ee)
+    f_cell(7, "London low", na(lL) ? "-" : f_fmt(lL) + (lLsw > 0 ? "  swept" : "  open"), lLsw > 0 ? #f87171 : #22d3ee)
+    string smtT = "-"
+    if not na(smtBB) and (na(smtSB) or smtBB > smtSB)
+        smtT := "bullish, " + str.tostring(bar_index - smtBB) + " bars ago"
+    else if not na(smtSB)
+        smtT := "bearish, " + str.tostring(bar_index - smtSB) + " bars ago"
+    f_cell(8, "Last SMT vs ES", smtT, #cbd5e1)
+    f_cell(9, "Entry window", t_entry ? "OPEN" : "closed", t_entry ? #34d399 : #94a3b8)
+    string st = "FLAT - waiting for a setup"
+    if tState == 1
+        st := "PENDING " + (tLong ? "BUY" : "SELL") + " limit " + f_fmt(tEntry)
+    else if tState == 2
+        st := "IN " + str.tostring(tQty) + " micros, stop " + f_fmt(tStop)
+    else if tState == 3
+        st := "RUNNER, stop " + f_fmt(tStop) + ", TP2 " + f_fmt(tTP2)
+    f_cell(10, "Trade", st, tState == 0 ? #94a3b8 : #38bdf8)
+    f_cell(11, "Today", str.tostring(dayN) + " trades, " + f_r(dayR) + "R", dayR >= 0 ? #34d399 : #f87171)
+    string hist = stN == 0 ? "no completed trades" : str.tostring(stN) + " trades, " + str.tostring(math.round(100.0 * stW / stN)) + "% win, " + f_r(stR / stN) + "R avg"
+    f_cell(12, "Chart history", hist, stR >= 0 ? #34d399 : #f87171)
+    f_cell(13, "", "history is not a backtest - small sample", #64748b)

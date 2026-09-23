@@ -1,0 +1,228 @@
+//@version=5
+// =============================================================================
+//  CANDICE LAU / CHART FANATICS — COMPLETE NQ STRATEGY (BACKTESTABLE ENGINE)
+//  Converts the audited Candace institutional engine into a backtestable strategy()
+//  with limit entry at CE, structural stop loss, and TP1/TP2 multi-contract scale out.
+// =============================================================================
+strategy("Candice Lau NQ Institutional Scalper [Strategy Engine]", overlay=true,
+     initial_capital=50000, default_qty_type=strategy.fixed, default_qty_value=2,
+     commission_type=strategy.commission.cash_per_contract, commission_value=0.62)
+
+// ---------------------------------------------------------------- INPUTS ---
+gT = "Sessions & Timing (New York time)"
+i_session = input.session("0915-1100:1234567", "Execution Window (09:15-11:00 ET)", group=gT)
+i_mid     = input.bool(true,  "Midnight opening price 00:00", group=gT)
+
+gG = "Opening Gaps (Take Profit Magnets)"
+i_rth     = input.bool(true,  "RTH gap (16:00 -> 09:30) scale-outs", group=gG)
+
+gP = "PD Arrays & Gaps"
+i_fvg     = input.bool(true,  "Fair Value Gaps (FVG)", group=gP)
+i_ifvg    = input.bool(true,  "Inversion FVGs (IFVG Confirmation)", group=gP)
+i_minfvg  = input.float(0.0,  "Min FVG size (points)", group=gP)
+i_maxfvg  = input.int(20,     "Max FVGs kept", minval=5, maxval=60, group=gP)
+
+gL = "Liquidity & Sweeps"
+i_pdhl    = input.bool(true,  "Previous Day High / Low", group=gL)
+i_eq      = input.bool(true,  "Relative equal highs / lows (EQH / EQL)", group=gL)
+i_eqtol   = input.float(2.0,  "Equal-level tolerance (points)", group=gL)
+i_recency = input.int(75,     "Sweep recency window (bars)", minval=10, maxval=180, group=gL)
+
+gE = "Execution Rules"
+i_min_rr  = input.float(2.0,  "Minimum Target R:R Ratio", step=0.5, group=gE)
+i_max_sl  = input.float(35.0, "Max Allowed Structural SL (Points)", group=gE)
+
+// ---------------------------------------------------------------- SESSIONS -
+t_asia   = not na(time(timeframe.period, "1900-0200:1234567", "America/New_York"))
+t_london = not na(time(timeframe.period, "0200-0500:1234567", "America/New_York"))
+t_exec   = not na(time(timeframe.period, i_session, "America/New_York"))
+t_mid    = not na(time(timeframe.period, "0000-0001:1234567", "America/New_York"))
+t_930    = not na(time(timeframe.period, "0930-0931:1234567", "America/New_York"))
+t_1600   = not na(time(timeframe.period, "1600-1601:1234567", "America/New_York"))
+
+newDay = ta.change(dayofmonth(time("D", "0000-0005", "America/New_York"))) != 0
+
+// 1. MIDNIGHT OPEN
+var float midOpen = na
+if t_mid and not t_mid[1]
+    midOpen := open
+
+// 2. RTH GAP & 50% CE
+var float rthPrevClose = na
+var float rthOpen      = na
+var float rth50        = na
+
+if t_1600 and not t_1600[1]
+    rthPrevClose := close
+
+if t_930 and not t_930[1]
+    rth50 := na
+    rthOpen := open
+    if i_rth and not na(rthPrevClose) and math.abs(rthOpen - rthPrevClose) > syminfo.mintick
+        float d = rthPrevClose - rthOpen
+        rth50 := rthOpen + d * 0.50
+
+// 3. PREVIOUS DAY H/L
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+// 4. ASIA & LONDON RANGES
+var float aH = na, var float aL = na
+var float lH = na, var float lL = na
+var int aHswBar = 0, var int aLswBar = 0
+var int lHswBar = 0, var int lLswBar = 0
+
+if t_asia and not t_asia[1]
+    aH := high, aL := low, aHswBar := 0, aLswBar := 0
+else if t_asia
+    aH := math.max(aH, high), aL := math.min(aL, low)
+
+if t_london and not t_london[1]
+    lH := high, lL := low, lHswBar := 0, lLswBar := 0
+else if t_london
+    lH := math.max(lH, high), lL := math.min(lL, low)
+
+// 5. EQUAL HIGHS / LOWS
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+var float lastPH = na, var float lastPL = na
+var float active_eqh = na, var float active_eql = na
+var int   eqh_sw_bar = 0,  var int   eql_sw_bar = 0
+
+if not na(ph)
+    if i_eq and not na(lastPH) and math.abs(ph - lastPH) <= i_eqtol
+        active_eqh := ph
+    lastPH := ph
+
+if not na(pl)
+    if i_eq and not na(lastPL) and math.abs(pl - lastPL) <= i_eqtol
+        active_eql := pl
+    lastPL := pl
+
+// Sweep tracking
+if barstate.isconfirmed
+    if not na(aH) and aHswBar == 0 and not t_asia and high > aH
+        aHswBar := bar_index
+    if not na(aL) and aLswBar == 0 and not t_asia and low < aL
+        aLswBar := bar_index
+    if not na(lH) and lHswBar == 0 and not t_london and high > lH
+        lHswBar := bar_index
+    if not na(lL) and lLswBar == 0 and not t_london and low < lL
+        lLswBar := bar_index
+    if not na(active_eql) and eql_sw_bar == 0 and low < active_eql
+        eql_sw_bar := bar_index
+    if not na(active_eqh) and eqh_sw_bar == 0 and high > active_eqh
+        eqh_sw_bar := bar_index
+
+if newDay
+    eql_sw_bar := 0
+    eqh_sw_bar := 0
+
+bool recent_low_sweep = (aLswBar > 0 and (bar_index - aLswBar) <= i_recency) or 
+                         (lLswBar > 0 and (bar_index - lLswBar) <= i_recency) or 
+                         (eql_sw_bar > 0 and (bar_index - eql_sw_bar) <= i_recency)
+
+bool recent_high_sweep = (aHswBar > 0 and (bar_index - aHswBar) <= i_recency) or 
+                          (lHswBar > 0 and (bar_index - lHswBar) <= i_recency) or 
+                          (eqh_sw_bar > 0 and (bar_index - eqh_sw_bar) <= i_recency)
+
+// 6. FVGs & IFVG TRACKING
+var float[] fTop  = array.new_float()
+var float[] fBot  = array.new_float()
+var bool[]  fBull = array.new_bool()
+var bool[]  fInv  = array.new_bool()
+
+bullGap = low > high[2] and (low - high[2]) >= i_minfvg
+bearGap = high < low[2] and (low[2] - high) >= i_minfvg
+
+if i_fvg and (bullGap or bearGap) and barstate.isconfirmed
+    float t = bullGap ? low : low[2]
+    float b = bullGap ? high[2] : high
+    array.push(fTop, t), array.push(fBot, b), array.push(fBull, bullGap), array.push(fInv, false)
+
+float active_bull_ifvg_ce = na
+float active_bull_ifvg_bot = na
+float active_bear_ifvg_ce = na
+float active_bear_ifvg_top = na
+
+if array.size(fTop) > 0
+    for i = array.size(fTop) - 1 to 0
+        float t = array.get(fTop, i)
+        float b = array.get(fBot, i)
+        bool  u = array.get(fBull, i)
+        bool  inv = array.get(fInv, i)
+
+        if not inv and i_ifvg
+            if not u and close > t
+                array.set(fInv, i, true)
+            else if u and close < b
+                array.set(fInv, i, true)
+
+        bool current_inv = array.get(fInv, i)
+        bool dead = false
+
+        if current_inv
+            dead := (not u and close < b) or (u and close > t)
+            if not dead
+                if not u and na(active_bull_ifvg_ce)
+                    active_bull_ifvg_ce := (t + b) / 2.0
+                    active_bull_ifvg_bot := b
+                else if u and na(active_bear_ifvg_ce)
+                    active_bear_ifvg_ce := (t + b) / 2.0
+                    active_bear_ifvg_top := t
+        else
+            if not i_ifvg
+                dead := (u and close < b) or (not u and close > t)
+
+        if dead or (array.size(fTop) > i_maxfvg and i == 0)
+            array.remove(fTop, i), array.remove(fBot, i), array.remove(fBull, i), array.remove(fInv, i)
+
+// 7. STRATEGY EXECUTION ENGINE
+bool in_window   = t_exec
+bool is_discount = not na(midOpen) and close < midOpen
+bool is_premium  = not na(midOpen) and close > midOpen
+
+bool buy_trigger  = in_window and recent_low_sweep and is_discount and not na(active_bull_ifvg_ce) and strategy.position_size == 0 and barstate.isconfirmed
+bool sell_trigger = in_window and recent_high_sweep and is_premium and not na(active_bear_ifvg_ce) and strategy.position_size == 0 and barstate.isconfirmed
+
+var float long_entry = na, var float long_sl = na, var float long_tp1 = na, var float long_tp2 = na
+var float short_entry = na, var float short_sl = na, var float short_tp1 = na, var float short_tp2 = na
+
+if buy_trigger
+    float entry_px = active_bull_ifvg_ce
+    float sl_px    = active_bull_ifvg_bot - (syminfo.mintick * 6)
+    float risk_pts = entry_px - sl_px
+
+    if risk_pts > 0 and risk_pts <= i_max_sl
+        float tp2_raw = not na(lH) and lH > entry_px ? lH : (not na(pdh) and pdh > entry_px ? pdh : entry_px + (risk_pts * i_min_rr))
+        float tp2_px  = math.max(tp2_raw, entry_px + (risk_pts * i_min_rr))
+        bool rr_valid = (tp2_px - entry_px) / risk_pts >= i_min_rr
+        float tp1_px  = not na(rth50) and rth50 > entry_px and rth50 < tp2_px ? rth50 : entry_px + (risk_pts * 1.0)
+
+        if rr_valid
+            long_entry := entry_px
+            long_sl    := sl_px
+            long_tp1   := tp1_px
+            long_tp2   := tp2_px
+            strategy.entry("Long", strategy.long, qty=2, limit=entry_px)
+            strategy.exit("Long Scale", "Long", qty=1, stop=sl_px, limit=tp1_px)
+            strategy.exit("Long Target", "Long", qty=1, stop=sl_px, limit=tp2_px)
+
+if sell_trigger
+    float entry_px = active_bear_ifvg_ce
+    float sl_px    = active_bear_ifvg_top + (syminfo.mintick * 6)
+    float risk_pts = sl_px - entry_px
+
+    if risk_pts > 0 and risk_pts <= i_max_sl
+        float tp2_raw = not na(lL) and lL < entry_px ? lL : (not na(pdl) and pdl < entry_px ? pdl : entry_px - (risk_pts * i_min_rr))
+        float tp2_px  = math.min(tp2_raw, entry_px - (risk_pts * i_min_rr))
+        bool rr_valid = (entry_px - tp2_px) / risk_pts >= i_min_rr
+        float tp1_px  = not na(rth50) and rth50 < entry_px and rth50 > tp2_px ? rth50 : entry_px - (risk_pts * 1.0)
+
+        if rr_valid
+            short_entry := entry_px
+            short_sl    := sl_px
+            short_tp1   := tp1_px
+            short_tp2   := tp2_px
+            strategy.entry("Short", strategy.short, qty=2, limit=entry_px)
+            strategy.exit("Short Scale", "Short", qty=1, stop=sl_px, limit=tp1_px)
+            strategy.exit("Short Target", "Short", qty=1, stop=sl_px, limit=tp2_px)

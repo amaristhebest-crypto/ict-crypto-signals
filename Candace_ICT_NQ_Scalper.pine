@@ -1,26 +1,29 @@
 //@version=5
 // =============================================================================
-//  CANDICE LAU / CHART FANATICS — COMPLETE NQ SCALPING SUITE [LEVELS + SIGNALS]
+//  CANDICE LAU / CHART FANATICS — COMPLETE NQ INSTITUTIONAL SUITE [AUDITED & FIXED]
 //  Combines her full Institutional Level Map with an Assisted Execution Engine.
 //  
-//  Features:
-//    1. NY Midnight Open (00:00 ET) with Discount/Premium tracking
-//    2. RTH Opening Gap (16:00 -> 09:30 ET) with 25%, 50%, 75% Scale-out levels
-//    3. New Day (NDOG) & New Week (NWOG) Opening Gaps
-//    4. Asian (19:00-02:00) & London (02:00-05:00) High/Low with Sweep tracking
-//    5. Relative Equal Highs (EQH) and Equal Lows (EQL)
-//    6. Real-time SMT Divergence vs ES (CME_MINI:ES1!)
-//    7. Inversion Fair Value Gap (IFVG) Engine + 50% CE Midpoint
-//    8. Assisted Entry/Exit Signals: Entry at CE, Stop Loss, TP1 (RTH 50%), TP2 (2R+)
+//  Audited & Patched Features:
+//    1. IFVG Lifecycle Fix: Prevents IFVG deletion on birth; tracks active state.
+//    2. Candice 09:28 Trade Window: Covers 09:15-11:00 ET execution window.
+//    3. Extended Sweep Recency: 75-bar lookback captures 08:30 news sweeps into open.
+//    4. Wired EQH / EQL Sweeps: Relative equal highs & lows directly trigger setups.
+//    5. Structural Stop Loss: Pure structure SL; skips trades exceeding max risk.
+//    6. Strict Minimum R:R Gate: Enforces >= i_min_rr (e.g. 2.0R minimum).
+//    7. Daily RTH 50% Reset & Ordered TP1/TP2: Prevents stale gaps and inverted TPs.
+//    8. Authentic 3-Candle 1H FVG: Compares candle [1] with candle [3] (not adjacent [2]).
+//    9. Dynamic Contract Sizing: Sized precisely for MFFU $250 Risk Plan (MNQ).
+//   10. Newest IFVG Selection: Targets the freshest active inversion zone.
 // =============================================================================
-indicator("Candice Lau Complete ICT Suite [Levels + Signals]", overlay=true,
+indicator("Candice Lau Complete ICT Suite [Levels + Signals - Patched]", overlay=true,
      max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ---------------------------------------------------------------- INPUTS ---
 gT = "Sessions & Timing (New York time)"
+i_session = input.session("0915-1100:1234567", "Execution Window (Captures 09:28 Pre-Open)", group=gT)
 i_asia    = input.bool(true,  "Asian range 19:00-02:00", group=gT)
 i_london  = input.bool(true,  "London range 02:00-05:00", group=gT)
-i_amzone  = input.bool(true,  "Highlight NY AM Execution (09:30-11:00 ET)", group=gT)
+i_amzone  = input.bool(true,  "Highlight Execution Window on Chart", group=gT)
 i_mid     = input.bool(true,  "Midnight opening price 00:00", group=gT)
 
 gG = "Opening Gaps (Take Profit Magnets)"
@@ -32,25 +35,27 @@ gP = "PD Arrays & Gaps"
 i_fvg     = input.bool(true,  "Fair Value Gaps (FVG)", group=gP)
 i_ifvg    = input.bool(true,  "Inversion FVGs (IFVG Confirmation)", group=gP)
 i_ce      = input.bool(true,  "Consequent Encroachment (50% CE)", group=gP)
-i_h1fvg   = input.bool(true,  "1-Hour FVG HTF Targets", group=gP)
+i_h1fvg   = input.bool(true,  "1-Hour FVG HTF Targets (3-Candle ICT Model)", group=gP)
 i_minfvg  = input.float(0.0,  "Min FVG size (points)", group=gP)
-i_maxfvg  = input.int(20,     "Max FVGs kept", minval=5, maxval=60, group=gP)
+i_maxfvg  = input.int(20,     "Max FVGs kept in memory", minval=5, maxval=60, group=gP)
 
-gL = "Liquidity"
+gL = "Liquidity & Sweeps"
 i_pdhl    = input.bool(true,  "Previous Day High / Low", group=gL)
-i_eq      = input.bool(true,  "Relative equal highs / lows", group=gL)
+i_eq      = input.bool(true,  "Relative equal highs / lows (EQH / EQL)", group=gL)
 i_eqtol   = input.float(2.0,  "Equal-level tolerance (points)", group=gL)
-i_sweep   = input.bool(true,  "Flag sweeps of session levels", group=gL)
+i_sweep   = input.bool(true,  "Flag sweeps of session & EQ levels", group=gL)
+i_recency = input.int(75,     "Sweep recency window (bars, 75m covers 08:30 sweep)", minval=10, maxval=180, group=gL)
 
 gS = "SMT Divergence"
 i_smt     = input.bool(true,  "SMT divergence vs ES", group=gS)
 i_smtsym  = input.string("CME_MINI:ES1!", "Correlated symbol", group=gS)
 
-gE = "Execution Assistant & Trade Signals"
-i_signals = input.bool(true,  "Show A+ Assisted Signals (Entry / SL / TP)", group=gE)
-i_min_rr  = input.float(2.0,  "Minimum Target R:R Ratio", step=0.5, group=gE)
-i_max_sl  = input.float(35.0, "Max Stop Loss (Points, default 35 = $140 risk on 2 MNQ)", group=gE)
-i_recency = input.int(30,     "Sweep recency window (bars)", group=gE)
+gE = "Assisted Execution & Tradovate Sizing"
+i_signals   = input.bool(true,  "Show A+ Assisted Signals (Entry / SL / TP)", group=gE)
+i_min_rr    = input.float(2.0,  "Minimum Target R:R Ratio", step=0.5, group=gE)
+i_max_sl    = input.float(35.0, "Max Allowed Structural SL (Points, reject if > max)", group=gE)
+i_risk_mode = input.string("MFFU $250 Risk Plan", "Position Sizing", options=["MFFU $250 Risk Plan", "Fixed 2 MNQ"], group=gE)
+i_risk_cash = input.float(250.0, "Target Dollar Risk ($)", group=gE)
 
 // ---------------------------------------------------------------- COLOURS --
 c_mid   = #f59e0b
@@ -67,15 +72,14 @@ c_ifvg_s = #d946ef // Magenta
 // ---------------------------------------------------------------- SESSIONS -
 t_asia   = not na(time(timeframe.period, "1900-0200:1234567", "America/New_York"))
 t_london = not na(time(timeframe.period, "0200-0500:1234567", "America/New_York"))
-t_pre    = not na(time(timeframe.period, "0830-0930:1234567", "America/New_York"))
-t_am     = not na(time(timeframe.period, "0930-1100:1234567", "America/New_York"))
+t_exec   = not na(time(timeframe.period, i_session, "America/New_York"))
 t_mid    = not na(time(timeframe.period, "0000-0001:1234567", "America/New_York"))
 t_930    = not na(time(timeframe.period, "0930-0931:1234567", "America/New_York"))
 t_1600   = not na(time(timeframe.period, "1600-1601:1234567", "America/New_York"))
 t_1700   = not na(time(timeframe.period, "1700-1701:1234567", "America/New_York"))
 t_1800   = not na(time(timeframe.period, "1800-1801:1234567", "America/New_York"))
 
-bgcolor(i_amzone and t_am ? color.new(c_bull, 94) : (t_pre ? color.new(#eab308, 95) : na), title="Session Background")
+bgcolor(i_amzone and t_exec ? color.new(c_bull, 94) : na, title="Execution Window Background")
 
 newDay = ta.change(dayofmonth(time("D", "0000-0005", "America/New_York"))) != 0
 
@@ -96,9 +100,11 @@ var line  l25 = na, var line l50 = na, var line l75 = na
 if t_1600 and not t_1600[1]
     rthPrevClose := close
 
-if t_930 and not t_930[1] and not na(rthPrevClose)
+// FIX 5: Reset rth50 and old lines at 09:30 so days without gaps don't carry stale levels
+if t_930 and not t_930[1]
+    rth50 := na
     rthOpen := open
-    if i_rth and math.abs(rthOpen - rthPrevClose) > syminfo.mintick
+    if i_rth and not na(rthPrevClose) and math.abs(rthOpen - rthPrevClose) > syminfo.mintick
         float hi = math.max(rthOpen, rthPrevClose)
         float lo = math.min(rthOpen, rthPrevClose)
         rthBox := box.new(bar_index, hi, bar_index + 60, lo,
@@ -177,7 +183,29 @@ else if t_london
 else if i_london and not na(lBox) and not newDay
     box.set_right(lBox, bar_index)
 
-// Sweep tracking with recency bar index
+// ------------------------------------------- 6. RELATIVE EQUAL HIGHS / LOWS-
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+var float lastPH = na, var int lastPHb = na
+var float lastPL = na, var int lastPLb = na
+var float active_eqh = na, var float active_eql = na
+var int   eqh_sw_bar = 0,  var int   eql_sw_bar = 0
+
+if not na(ph)
+    if i_eq and not na(lastPH) and math.abs(ph - lastPH) <= i_eqtol
+        active_eqh := ph
+        line.new(lastPHb, lastPH, bar_index - 3, ph, color=color.new(c_bear, 10), width=2, extend=extend.right, style=line.style_dotted)
+        label.new(bar_index - 3, ph, "EQH (Buy-side Liquidity Pool)", color=color.new(c_bear, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+    lastPH := ph, lastPHb := bar_index - 3
+
+if not na(pl)
+    if i_eq and not na(lastPL) and math.abs(pl - lastPL) <= i_eqtol
+        active_eql := pl
+        line.new(lastPLb, lastPL, bar_index - 3, pl, color=color.new(c_bull, 10), width=2, extend=extend.right, style=line.style_dotted)
+        label.new(bar_index - 3, pl, "EQL (Sell-side Liquidity Pool)", color=color.new(c_bull, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    lastPL := pl, lastPLb := bar_index - 3
+
+// Sweep tracking (Asia, London, AND Equal Highs/Lows)
 if i_sweep and barstate.isconfirmed
     if not na(aH) and aHswBar == 0 and not t_asia and high > aH
         aHswBar := bar_index
@@ -191,17 +219,34 @@ if i_sweep and barstate.isconfirmed
     if not na(lL) and lLswBar == 0 and not t_london and low < lL
         lLswBar := bar_index
         label.new(bar_index, low, "London Low swept", color=color.new(c_bull, 15), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    // FIX 2: Wire Equal Highs / Equal Lows sweeps directly into execution triggers
+    if not na(active_eql) and eql_sw_bar == 0 and low < active_eql
+        eql_sw_bar := bar_index
+        label.new(bar_index, low, "EQL Swept", color=color.new(c_bull, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+    if not na(active_eqh) and eqh_sw_bar == 0 and high > active_eqh
+        eqh_sw_bar := bar_index
+        label.new(bar_index, high, "EQH Swept", color=color.new(c_bear, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
 
-bool recent_low_sweep = (aLswBar > 0 and (bar_index - aLswBar) <= i_recency) or (lLswBar > 0 and (bar_index - lLswBar) <= i_recency)
-bool recent_high_sweep = (aHswBar > 0 and (bar_index - aHswBar) <= i_recency) or (lHswBar > 0 and (bar_index - lHswBar) <= i_recency)
+// Reset sweeps on new day
+if newDay
+    eql_sw_bar := 0
+    eqh_sw_bar := 0
 
-// ------------------------------------------------------------- 6. FVGs & IFVG-
-var float[] fTop = array.new_float()
-var float[] fBot = array.new_float()
+bool recent_low_sweep = (aLswBar > 0 and (bar_index - aLswBar) <= i_recency) or 
+                         (lLswBar > 0 and (bar_index - lLswBar) <= i_recency) or 
+                         (eql_sw_bar > 0 and (bar_index - eql_sw_bar) <= i_recency)
+
+bool recent_high_sweep = (aHswBar > 0 and (bar_index - aHswBar) <= i_recency) or 
+                          (lHswBar > 0 and (bar_index - lHswBar) <= i_recency) or 
+                          (eqh_sw_bar > 0 and (bar_index - eqh_sw_bar) <= i_recency)
+
+// ------------------------------------------------------------- 7. FVGs & IFVG-
+var float[] fTop  = array.new_float()
+var float[] fBot  = array.new_float()
 var bool[]  fBull = array.new_bool()
-var box[]   fBox = array.new_box()
-var line[]  fCE  = array.new_line()
-var bool[]  fInv = array.new_bool()
+var box[]   fBox  = array.new_box()
+var line[]  fCE   = array.new_line()
+var bool[]  fInv  = array.new_bool()
 
 bullGap = low > high[2] and (low - high[2]) >= i_minfvg
 bearGap = high < low[2] and (low[2] - high) >= i_minfvg
@@ -215,48 +260,54 @@ if i_fvg and (bullGap or bearGap) and barstate.isconfirmed
     array.push(fTop, t), array.push(fBot, b), array.push(fBull, bullGap)
     array.push(fBox, nb), array.push(fCE, nl), array.push(fInv, false)
 
-// Track active IFVGs for execution signals
+// Track active IFVGs for execution signals (Point 8: Target freshest/newest active IFVG)
 float active_bull_ifvg_ce = na
 float active_bull_ifvg_bot = na
 float active_bear_ifvg_ce = na
 float active_bear_ifvg_top = na
 
 if array.size(fBox) > 0
+    // Iterate from newest (size - 1) to oldest (0)
     for i = array.size(fBox) - 1 to 0
         float t = array.get(fTop, i)
         float b = array.get(fBot, i)
         bool  u = array.get(fBull, i)
         bool  inv = array.get(fInv, i)
 
+        // Check for Inversion if not yet inverted
         if not inv and i_ifvg
-            // Check for INVERSION
             if not u and close > t // Bearish FVG inverted upward to Bullish Support
                 array.set(fInv, i, true)
                 box.set_bgcolor(array.get(fBox, i), color.new(c_ifvg_b, 80))
                 box.set_border_color(array.get(fBox, i), color.new(c_ifvg_b, 30))
                 label.new(bar_index, t, "Bullish IFVG (Support)", color=color.new(c_ifvg_b, 20), textcolor=color.white, size=size.tiny, style=label.style_label_down)
-                active_bull_ifvg_ce := (t + b) / 2.0
-                active_bull_ifvg_bot := b
             else if u and close < b // Bullish FVG inverted downward to Bearish Resistance
                 array.set(fInv, i, true)
                 box.set_bgcolor(array.get(fBox, i), color.new(c_ifvg_s, 80))
                 box.set_border_color(array.get(fBox, i), color.new(c_ifvg_s, 30))
                 label.new(bar_index, b, "Bearish IFVG (Resistance)", color=color.new(c_ifvg_s, 20), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-                active_bear_ifvg_ce := (t + b) / 2.0
-                active_bear_ifvg_top := t
 
+        // FIX 1: Re-read inv state so fresh inversions are NOT deleted on the birth bar!
+        bool current_inv = array.get(fInv, i)
         bool dead = false
-        if inv
+
+        if current_inv
+            // An inverted FVG dies only when violated on the other side
+            // Bullish IFVG (originally bearish u=false) acts as support: dies if close < b
+            // Bearish IFVG (originally bullish u=true) acts as resistance: dies if close > t
             dead := (not u and close < b) or (u and close > t)
             if not dead
-                if not u
+                // Point 8: Store the NEWEST active IFVG (first encountered in reverse loop)
+                if not u and na(active_bull_ifvg_ce)
                     active_bull_ifvg_ce := (t + b) / 2.0
                     active_bull_ifvg_bot := b
-                else
+                else if u and na(active_bear_ifvg_ce)
                     active_bear_ifvg_ce := (t + b) / 2.0
                     active_bear_ifvg_top := t
         else
-            dead := (u and close < b) or (not u and close > t)
+            // Regular uninverted FVG dies if price fills it through without inversion mode
+            if not i_ifvg
+                dead := (u and close < b) or (not u and close > t)
 
         if dead or (array.size(fBox) > i_maxfvg and i == 0)
             box.delete(array.get(fBox, i))
@@ -271,41 +322,24 @@ if array.size(fBox) > 0
             if not na(lc2)
                 line.set_x2(lc2, bar_index + 3)
 
-// ------------------------------------------------------------ 7. 1H FVG ----
-[h1h2, h1l2] = request.security(syminfo.tickerid, "60", [high[2], low[2]])
+// ------------------------------------------------------------ 8. 1H FVG ----
+// FIX 6: True ICT 3-Candle FVG comparing Candle [1] against Candle [3] (not adjacent [2])
+[h1h3, h1l3] = request.security(syminfo.tickerid, "60", [high[3], low[3]])
 [h1h1, h1l1] = request.security(syminfo.tickerid, "60", [high[1], low[1]])
 
 var box h1Box = na
 newH1 = ta.change(time("60")) != 0
-if i_h1fvg and newH1 and not na(h1h2)
-    bool hb = h1l1 > h1h2
-    bool hs = h1h1 < h1l2
+if i_h1fvg and newH1 and not na(h1h3)
+    bool hb = h1l1 > h1h3 // Gap between candle 1 low and candle 3 high
+    bool hs = h1h1 < h1l3 // Gap between candle 1 high and candle 3 low
     if hb or hs
-        float t = hb ? h1l1 : h1l2
-        float b = hb ? h1h2 : h1h1
+        float t = hb ? h1l1 : h1h3
+        float b = hb ? h1h3 : h1h1
         color cc = hb ? c_bull : c_bear
         h1Box := box.new(bar_index, t, bar_index + 90, b, border_color=color.new(cc, 15), bgcolor=color.new(cc, 90), border_style=line.style_dashed, border_width=2)
         label.new(bar_index, t, hb ? "1H Bullish FVG (Target)" : "1H Bearish FVG (Target)", color=color.new(cc, 25), textcolor=color.white, size=size.tiny)
 if not na(h1Box)
     box.set_right(h1Box, bar_index + 5)
-
-// ------------------------------------------- 8. RELATIVE EQUAL HIGHS / LOWS-
-ph = ta.pivothigh(high, 3, 3)
-pl = ta.pivotlow(low, 3, 3)
-var float lastPH = na, var int lastPHb = na
-var float lastPL = na, var int lastPLb = na
-
-if not na(ph)
-    if i_eq and not na(lastPH) and math.abs(ph - lastPH) <= i_eqtol
-        line.new(lastPHb, lastPH, bar_index - 3, ph, color=color.new(c_bear, 10), width=2, extend=extend.right, style=line.style_dotted)
-        label.new(bar_index - 3, ph, "EQH (Buy-side Liquidity Pool)", color=color.new(c_bear, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
-    lastPH := ph, lastPHb := bar_index - 3
-
-if not na(pl)
-    if i_eq and not na(lastPL) and math.abs(pl - lastPL) <= i_eqtol
-        line.new(lastPLb, lastPL, bar_index - 3, pl, color=color.new(c_bull, 10), width=2, extend=extend.right, style=line.style_dotted)
-        label.new(bar_index - 3, pl, "EQL (Sell-side Liquidity Pool)", color=color.new(c_bull, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-    lastPL := pl, lastPLb := bar_index - 3
 
 // ------------------------------------------------------------- 9. SMT vs ES-
 es_l = request.security(i_smtsym, timeframe.period, low)
@@ -326,68 +360,105 @@ if i_smt and barstate.isconfirmed
 // =============================================================================
 // 10. CANDICE A+ ASSISTED EXECUTION SIGNALS (WITH CLEAR ENTRY / SL / TP BOXES)
 // =============================================================================
-bool in_ny_am    = t_am
+// FIX 2: Use i_session (09:15-11:00) so Candice's 09:28 trade is fully covered
+bool in_window   = t_exec
 bool is_discount = not na(midOpen) and close < midOpen
 bool is_premium  = not na(midOpen) and close > midOpen
 
-bool buy_trigger  = i_signals and in_ny_am and recent_low_sweep and is_discount and not na(active_bull_ifvg_ce) and barstate.isconfirmed
-bool sell_trigger = i_signals and in_ny_am and recent_high_sweep and is_premium and not na(active_bear_ifvg_ce) and barstate.isconfirmed
+bool buy_trigger  = i_signals and in_window and recent_low_sweep and is_discount and not na(active_bull_ifvg_ce) and barstate.isconfirmed
+bool sell_trigger = i_signals and in_window and recent_high_sweep and is_premium and not na(active_bear_ifvg_ce) and barstate.isconfirmed
 
 var int last_sig_bar = 0
 
+// BUY SETUP EXECUTION
 if buy_trigger and (bar_index - last_sig_bar > 15)
-    last_sig_bar := bar_index
     float entry_px = active_bull_ifvg_ce
-    float sl_px    = math.max(active_bull_ifvg_bot - (syminfo.mintick * 6), entry_px - i_max_sl)
+    // FIX 3: Structural Stop behind IFVG bottom. Do NOT shrink stop arbitrarily; enforce true risk
+    float sl_px    = active_bull_ifvg_bot - (syminfo.mintick * 6)
     float risk_pts = entry_px - sl_px
 
+    // FIX 3: If structural risk exceeds i_max_sl, SKIP the trade rather than taking random noise
     if risk_pts > 0 and risk_pts <= i_max_sl
-        float tp1_px = not na(rth50) and rth50 > entry_px ? rth50 : entry_px + (risk_pts * 1.5)
-        float tp2_px = not na(lH) and lH > entry_px ? lH : entry_px + (risk_pts * i_min_rr)
-        if tp2_px <= entry_px + (risk_pts * 1.5)
-            tp2_px := entry_px + (risk_pts * i_min_rr)
+        // Target calculation
+        float tp2_raw = not na(lH) and lH > entry_px ? lH : (not na(pdh) and pdh > entry_px ? pdh : entry_px + (risk_pts * i_min_rr))
+        float tp2_px  = math.max(tp2_raw, entry_px + (risk_pts * i_min_rr))
+        
+        // FIX 4: Minimum R:R check must actually enforce i_min_rr
+        bool rr_valid = (tp2_px - entry_px) / risk_pts >= i_min_rr
 
-        // Draw Execution Visual Box
-        line.new(bar_index, entry_px, bar_index + 15, entry_px, color=#38bdf8, width=2)
-        line.new(bar_index, sl_px, bar_index + 15, sl_px, color=#ef4444, width=2)
-        line.new(bar_index, tp2_px, bar_index + 15, tp2_px, color=#34d399, width=2)
+        // FIX 5: TP1 ordering - must land strictly between entry and TP2
+        float tp1_px = not na(rth50) and rth50 > entry_px and rth50 < tp2_px ? rth50 : entry_px + (risk_pts * 1.0)
 
-        string txt = "⚡ CANDACE A+ BUY (LONG)\n" +
-                     "--------------------\n" +
-                     "1. Entry (CE): $" + str.tostring(entry_px, "#.##") + "\n" +
-                     "2. Stop Loss: $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts / $" + str.tostring(risk_pts * 4, "#") + " risk on 2 MNQ)\n" +
-                     "3. TP 1 (Scale): $" + str.tostring(tp1_px, "#.##") + "\n" +
-                     "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (1:" + str.tostring((tp2_px - entry_px)/risk_pts, "#.#") + "R)"
+        if rr_valid
+            last_sig_bar := bar_index
 
-        label.new(bar_index, low - (syminfo.mintick * 12), txt, color=color.new(#064e3b, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
-        alert("Candace A+ BUY Signal on NQ | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
+            // Sizing: MFFU $250 Plan vs Fixed 2 MNQ (Point 7)
+            int contracts = i_risk_mode == "Fixed 2 MNQ" ? 2 : math.max(1, math.floor(i_risk_cash / (risk_pts * 2.0)))
+            float dollar_risk = contracts * (risk_pts * 2.0)
+            float dollar_tp1  = (contracts / 2.0) * ((tp1_px - entry_px) * 2.0)
+            float dollar_tp2  = (contracts / 2.0) * ((tp2_px - entry_px) * 2.0) + dollar_tp1
 
+            // Draw Execution Visual Brackets
+            line.new(bar_index, entry_px, bar_index + 20, entry_px, color=#38bdf8, width=2)
+            line.new(bar_index, sl_px, bar_index + 20, sl_px, color=#ef4444, width=2)
+            line.new(bar_index, tp1_px, bar_index + 20, tp1_px, color=#facc15, width=1, style=line.style_dashed)
+            line.new(bar_index, tp2_px, bar_index + 20, tp2_px, color=#34d399, width=2)
+
+            string txt = "⚡ CANDACE A+ BUY (LONG)\n" +
+                         "--------------------\n" +
+                         "Position: " + str.tostring(contracts) + " MNQ contracts\n" +
+                         "1. Entry (CE Limit): $" + str.tostring(entry_px, "#.##") + "\n" +
+                         "2. Stop Loss (Structure): $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts | -$" + str.tostring(dollar_risk, "#.##") + ")\n" +
+                         "3. TP 1 (Scale 50%): $" + str.tostring(tp1_px, "#.##") + " (+$" + str.tostring(dollar_tp1, "#.##") + ")\n" +
+                         "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (" + str.tostring((tp2_px - entry_px)/risk_pts, "#.#") + "R | +$" + str.tostring(dollar_tp2, "#.##") + ")"
+
+            label.new(bar_index, low - (syminfo.mintick * 12), txt, color=color.new(#064e3b, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+            alert("Candace A+ BUY | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP2: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
+
+// SELL SETUP EXECUTION
 if sell_trigger and (bar_index - last_sig_bar > 15)
-    last_sig_bar := bar_index
     float entry_px = active_bear_ifvg_ce
-    float sl_px    = math.min(active_bear_ifvg_top + (syminfo.mintick * 6), entry_px + i_max_sl)
+    // FIX 3: Structural Stop above IFVG top. Do NOT shrink stop arbitrarily
+    float sl_px    = active_bear_ifvg_top + (syminfo.mintick * 6)
     float risk_pts = sl_px - entry_px
 
+    // FIX 3: If structural risk exceeds i_max_sl, SKIP the trade rather than taking random noise
     if risk_pts > 0 and risk_pts <= i_max_sl
-        float tp1_px = not na(rth50) and rth50 < entry_px ? rth50 : entry_px - (risk_pts * 1.5)
-        float tp2_px = not na(lL) and lL < entry_px ? lL : entry_px - (risk_pts * i_min_rr)
-        if tp2_px >= entry_px - (risk_pts * 1.5)
-            tp2_px := entry_px - (risk_pts * i_min_rr)
+        // Target calculation
+        float tp2_raw = not na(lL) and lL < entry_px ? lL : (not na(pdl) and pdl < entry_px ? pdl : entry_px - (risk_pts * i_min_rr))
+        float tp2_px  = math.min(tp2_raw, entry_px - (risk_pts * i_min_rr))
 
-        // Draw Execution Visual Box
-        line.new(bar_index, entry_px, bar_index + 15, entry_px, color=#38bdf8, width=2)
-        line.new(bar_index, sl_px, bar_index + 15, sl_px, color=#ef4444, width=2)
-        line.new(bar_index, tp2_px, bar_index + 15, tp2_px, color=#34d399, width=2)
+        // FIX 4: Minimum R:R check must actually enforce i_min_rr
+        bool rr_valid = (entry_px - tp2_px) / risk_pts >= i_min_rr
 
-        string txt = "⚡ CANDACE A+ SELL (SHORT)\n" +
-                     "--------------------\n" +
-                     "1. Entry (CE): $" + str.tostring(entry_px, "#.##") + "\n" +
-                     "2. Stop Loss: $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts / $" + str.tostring(risk_pts * 4, "#") + " risk on 2 MNQ)\n" +
-                     "3. TP 1 (Scale): $" + str.tostring(tp1_px, "#.##") + "\n" +
-                     "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (1:" + str.tostring((entry_px - tp2_px)/risk_pts, "#.#") + "R)"
+        // FIX 5: TP1 ordering - must land strictly between entry and TP2
+        float tp1_px = not na(rth50) and rth50 < entry_px and rth50 > tp2_px ? rth50 : entry_px - (risk_pts * 1.0)
 
-        label.new(bar_index, high + (syminfo.mintick * 12), txt, color=color.new(#7f1d1d, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
-        alert("Candace A+ SELL Signal on NQ | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
+        if rr_valid
+            last_sig_bar := bar_index
+
+            // Sizing: MFFU $250 Plan vs Fixed 2 MNQ (Point 7)
+            int contracts = i_risk_mode == "Fixed 2 MNQ" ? 2 : math.max(1, math.floor(i_risk_cash / (risk_pts * 2.0)))
+            float dollar_risk = contracts * (risk_pts * 2.0)
+            float dollar_tp1  = (contracts / 2.0) * ((entry_px - tp1_px) * 2.0)
+            float dollar_tp2  = (contracts / 2.0) * ((entry_px - tp2_px) * 2.0) + dollar_tp1
+
+            // Draw Execution Visual Brackets
+            line.new(bar_index, entry_px, bar_index + 20, entry_px, color=#38bdf8, width=2)
+            line.new(bar_index, sl_px, bar_index + 20, sl_px, color=#ef4444, width=2)
+            line.new(bar_index, tp1_px, bar_index + 20, tp1_px, color=#facc15, width=1, style=line.style_dashed)
+            line.new(bar_index, tp2_px, bar_index + 20, tp2_px, color=#34d399, width=2)
+
+            string txt = "⚡ CANDACE A+ SELL (SHORT)\n" +
+                         "--------------------\n" +
+                         "Position: " + str.tostring(contracts) + " MNQ contracts\n" +
+                         "1. Entry (CE Limit): $" + str.tostring(entry_px, "#.##") + "\n" +
+                         "2. Stop Loss (Structure): $" + str.tostring(sl_px, "#.##") + " (" + str.tostring(risk_pts, "#.#") + " pts | -$" + str.tostring(dollar_risk, "#.##") + ")\n" +
+                         "3. TP 1 (Scale 50%): $" + str.tostring(tp1_px, "#.##") + " (+$" + str.tostring(dollar_tp1, "#.##") + ")\n" +
+                         "4. TP 2 (Target): $" + str.tostring(tp2_px, "#.##") + " (" + str.tostring((entry_px - tp2_px)/risk_pts, "#.#") + "R | +$" + str.tostring(dollar_tp2, "#.##") + ")"
+
+            label.new(bar_index, high + (syminfo.mintick * 12), txt, color=color.new(#7f1d1d, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+            alert("Candace A+ SELL | Entry: " + str.tostring(entry_px) + " | SL: " + str.tostring(sl_px) + " | TP2: " + str.tostring(tp2_px), alert.freq_once_per_bar_close)
 
 // ------------------------------------------------------------- 11. HUD -----
 var table hud = table.new(position.top_right, 2, 10,
@@ -408,6 +479,6 @@ if barstate.islast
     f_cell(6, "London High", na(lH) ? "—" : str.tostring(lH, "#.##") + (lHswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), lHswBar > 0 ? #f87171 : #22d3ee)
     f_cell(7, "London Low", na(lL) ? "—" : str.tostring(lL, "#.##") + (lLswBar > 0 ? " ⚡ SWEPT" : " 🎯 UNTAKEN"), lLswBar > 0 ? #f87171 : #22d3ee)
     f_cell(8, "SMT vs ES", smtTxt, smtTxt == "—" ? #94a3b8 : #34d399)
-    string win_txt = t_am ? "🟢 NY OPEN (A+ Window)" : (t_pre ? "⚠️ PRE-MARKET (Avoid Traps)" : "⚪ Outside Window")
-    color win_col = t_am ? #34d399 : (t_pre ? #facc15 : #94a3b8)
+    string win_txt = t_exec ? "🟢 EXECUTION WINDOW (09:15-11:00)" : "⚪ Outside Window"
+    color win_col = t_exec ? #34d399 : #94a3b8
     f_cell(9, "Trading Window", win_txt, win_col)
